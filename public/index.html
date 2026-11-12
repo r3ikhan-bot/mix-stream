@@ -1,138 +1,144 @@
 <!DOCTYPE html>
 <html lang="id">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="theme-color" content="#141836">
-  <title>Midas DM8 Stream Console — OBS &amp; TTLS</title>
-  <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/styles.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>DM12 Digital Mixer · StudioStream</title>
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header class="dm-topbar">
-    <div class="tb-group">
-      <div class="dm-brand">
-        <span id="ws-dot" class="ws-dot" aria-hidden="true"></span>
-        <span class="brand-logo">MIDAS</span>
-        <span class="brand-model">DM8 · STREAM</span>
+  <div id="app">
+    <header class="dm-topbar">
+      <div class="tb-group tb-brand">
+        <span id="ws-dot" class="status-dot" title="Status Koneksi WebSocket"></span>
+        <h1 class="brand-title">DM12 <span class="brand-sub">StudioStream</span></h1>
+        <button id="audio-setup-btn" class="tb-btn tb-audio-btn" type="button" title="Konfigurasi Audio Interface & Routing OBS">
+          <span class="audio-led"></span>
+          <span id="audio-status-label">Audio I/O...</span>
+        </button>
       </div>
-      <button type="button" id="audio-setup-btn" class="dm-btn status-pill">
-        <span id="audio-status-label">Audio Setup</span>
-      </button>
-    </div>
 
-    <div class="tb-group tb-scenes" id="scene-bar" role="group" aria-label="Streaming Scenes"></div>
+      <div id="statusReadout" class="readout-pill">Siap — Seret Knob/Fader · Double-click Reset</div>
 
-    <div class="tb-group">
-      <div class="bgm-deck" role="group" aria-label="Background Music Player">
-        <input type="file" id="bgm-upload-input" accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg,.flac" hidden>
-        <span id="bgm-track-label" class="bgm-track-label">BGM: Kosong</span>
-        <button type="button" id="bgm-load-btn" class="dm-btn small">Muat BGM</button>
-        <button type="button" id="bgm-play-btn" class="dm-btn small" aria-pressed="false">Play</button>
-        <button type="button" id="bgm-loop-btn" class="dm-btn small" aria-pressed="true">Loop</button>
+      <div class="tb-group tb-actions">
+        <div id="scene-bar" class="scene-bar" role="group" aria-label="Scene Preset">
+          <button class="scene-btn" type="button" data-scene="live-talk">Live Talk</button>
+          <button class="scene-btn" type="button" data-scene="karaoke">Karaoke</button>
+          <button class="scene-btn" type="button" data-scene="gaming">Gaming</button>
+          <button class="scene-btn" type="button" data-scene="brb">BRB</button>
+        </div>
+
+        <div class="bgm-deck" title="Pemutar Musik Latar (Ch 7-8)">
+          <input id="bgm-upload-input" type="file" accept=".wav,.mp3,.m4a,.ogg,.flac,audio/*" hidden />
+          <button id="bgm-load-btn" class="tb-btn" type="button">Muat BGM</button>
+          <span id="bgm-track-label" class="bgm-label">Belum ada lagu</span>
+          <button id="bgm-play-btn" class="tb-btn tb-play-btn" type="button" title="Play / Pause BGM">▶</button>
+          <button id="bgm-loop-btn" class="tb-btn is-on" type="button" title="Loop BGM">↻</button>
+        </div>
+
+        <button id="auto-duck-btn" class="tb-btn tb-duck-btn" type="button" title="Auto-Duck Musik saat Host bicara">
+          <span>Duck</span>
+          <span id="duck-db-badge" class="duck-badge">OFF</span>
+        </button>
+
+        <button id="toggle-pads-btn" class="tb-btn" type="button">Pads</button>
+        <button id="toggle-fat-btn" class="tb-btn" type="button">DSP</button>
+        <button id="remote-info-btn" class="tb-btn tb-remote-btn" type="button">HP Remote</button>
       </div>
-      <button type="button" id="auto-duck-btn" class="dm-btn small" aria-pressed="true">
-        Duck <span id="duck-db-badge" class="badge-val">0 dB</span>
-      </button>
-      <button type="button" id="toggle-pads-btn" class="dm-btn small" aria-pressed="true">Pads</button>
-      <button type="button" id="toggle-fat-btn" class="dm-btn small" aria-pressed="false">DSP</button>
-      <button type="button" id="remote-info-btn" class="dm-btn small accent">HP Remote</button>
-    </div>
-  </header>
+    </header>
 
-  <main class="dm-workspace">
-    <section class="dm-chassis" aria-label="Midas DM12 Inspired Streaming Console">
-      <div class="chassis-screw tl" aria-hidden="true"></div>
-      <div class="chassis-screw tr" aria-hidden="true"></div>
-      <div class="chassis-screw bl" aria-hidden="true"></div>
-      <div class="chassis-screw br" aria-hidden="true"></div>
+    <main id="canvasContainer" class="console-stage">
+      <div class="canvas-scroll-wrap">
+        <canvas id="mixerCanvas" aria-label="DM12 Digital Mixer Console"></canvas>
+      </div>
 
-      <div id="console-rack" class="dm-channels-grid"></div>
-      <aside id="master-rack" class="dm-master-bay" aria-label="Master &amp; Monitor Section"></aside>
+      <aside id="fat-panel" class="fat-drawer is-collapsed" aria-label="DSP Channel Inspector">
+        <div class="fat-head">
+          <span class="fat-title">DSP · <strong id="fat-channel-name">Host Mic</strong></span>
+          <button id="fat-close-btn" class="tb-btn tb-close" type="button" aria-label="Tutup DSP">✕</button>
+        </div>
+        <div id="fat-body" class="fat-body"></div>
+      </aside>
+    </main>
+
+    <section id="soundboard-dock" class="soundboard-dock is-collapsed" aria-label="Soundboard Pads">
+      <div class="dock-head">
+        <span class="dock-title">SOUNDBOARD PADS · CH 9-10</span>
+        <div class="dock-tools">
+          <input id="wav-upload-input" type="file" accept=".wav,.mp3,.m4a,.ogg,.flac,audio/*" hidden />
+          <button id="stop-pads-btn" class="tb-btn tb-danger" type="button">Stop Semua Pad</button>
+        </div>
+      </div>
+      <div id="pads-row" class="pads-row"></div>
     </section>
 
-    <aside id="fat-panel" class="dsp-drawer" aria-labelledby="fat-title" hidden>
-      <div class="dsp-head">
-        <div>
-          <h2 id="fat-title">Channel DSP &amp; Routing</h2>
-          <p id="fat-channel-name" class="dsp-sub">Host Mic</p>
-        </div>
-        <button type="button" id="fat-close-btn" class="dm-btn small">Tutup</button>
-      </div>
-      <div id="fat-body" class="dsp-body"></div>
-    </aside>
-  </main>
+    <footer class="dm-footer">
+      Seret <b>Knob</b> naik/turun atau pakai scroll mouse &bull; <b>Double-click</b> knob/fader untuk reset ke 0 dB &bull; Klik <b>[OBS] [MON] [DSP] [PFL] [MUTE]</b> langsung di console.
+    </footer>
+  </div>
 
-  <section id="soundboard-dock" class="pads-dock" aria-label="Live Soundboard Pads">
-    <div class="pads-head">
-      <span class="pads-title">SOUNDBOARD (CH 9-10)</span>
-      <input type="file" id="wav-upload-input" accept="audio/*,.wav,.mp3,.m4a,.ogg" hidden>
-      <button type="button" id="stop-pads-btn" class="dm-btn small danger">Stop Pads</button>
-    </div>
-    <div id="pads-row" class="pads-row"></div>
-  </section>
-
-  <dialog id="audio-dialog" closedby="any" aria-labelledby="ad-title">
-    <form method="dialog" class="dialog-head">
-      <div>
-        <h2 id="ad-title">Audio Device &amp; OBS / TTLS Routing</h2>
-        <p id="ad-status-sub" class="dialog-sub">CoreAudio / WASAPI</p>
+  <dialog id="audio-dialog" class="modal-dialog" closedby="any">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>Pengaturan Audio Device &amp; Routing OBS</h3>
+        <button class="tb-btn tb-close" type="button" data-close-dialog="audio-dialog">✕</button>
       </div>
-      <button type="submit" class="dm-btn small" value="close">Tutup</button>
-    </form>
-    <div class="dialog-body">
-      <div class="form-row">
-        <label for="sel-input-dev">Mic Input Hardware (Masuk ke Ch 1–3)</label>
-        <select id="sel-input-dev"></select>
+      <div class="modal-body">
+        <label class="field-row">
+          <span>Input Mic / Audio Interface (Ch 1-3)</span>
+          <select id="sel-input-dev"></select>
+        </label>
+        <label class="field-row">
+          <span>Input Musik / System Loopback (Ch 4-6 · BlackHole / VB-Cable)</span>
+          <select id="sel-music-input-dev"></select>
+        </label>
+        <label class="field-row">
+          <span>Monitor Output (Headphone Host)</span>
+          <select id="sel-mon-dev"></select>
+        </label>
+        <label class="field-row">
+          <span>Stream Output (ke OBS / TikTok Live Studio)</span>
+          <select id="sel-stream-dev"></select>
+        </label>
+        <label class="field-row">
+          <span>Buffer Size (Latensi)</span>
+          <select id="sel-buf-size">
+            <option value="128">128 samples (~2.7 ms)</option>
+            <option value="256" selected>256 samples (~5.3 ms)</option>
+            <option value="512">512 samples (~10.7 ms)</option>
+            <option value="1024">1024 samples (~21.3 ms)</option>
+          </select>
+        </label>
+        <p class="modal-hint">
+          Tips: Arahkan <b>Stream Output</b> ke virtual cable (mis. <i>BlackHole 2ch</i> / <i>VB-Cable</i>) lalu pilih virtual cable itu sebagai Mic/Audio Input di OBS Studio atau TikTok Live Studio.
+        </p>
       </div>
-      <div class="form-row">
-        <label for="sel-music-input-dev">Loopback / BGM Input (Ch 4–8: Spotify/YouTube via BlackHole / VB-Cable)</label>
-        <select id="sel-music-input-dev"></select>
-      </div>
-      <div class="form-row">
-        <label for="sel-mon-dev">Monitor Output (Headphone / Speaker)</label>
-        <select id="sel-mon-dev"></select>
-      </div>
-      <div class="form-row">
-        <label for="sel-stream-dev">Stream Output ke OBS / TikTok Live Studio (Virtual Cable)</label>
-        <select id="sel-stream-dev"></select>
-      </div>
-      <div class="form-row">
-        <label for="sel-buf-size">Buffer Size (Latency)</label>
-        <select id="sel-buf-size">
-          <option value="128">128 samples (Ultra Low)</option>
-          <option value="256">256 samples (Balanced)</option>
-          <option value="512">512 samples (Safe)</option>
-        </select>
-      </div>
-      <p class="dialog-tip">
-        Tips macOS: Jika meter Mic tetap diam, buka <strong>System Settings → Privacy &amp; Security → Microphone</strong> dan aktifkan izin untuk Terminal / StudioStream. Untuk putar lagu langsung tanpa BlackHole, gunakan tombol <strong>Muat BGM</strong> di atas.
-      </p>
-      <div class="dialog-actions">
-        <button type="button" id="refresh-dev-btn" class="dm-btn small">Scan Ulang Device</button>
-        <button type="button" id="apply-audio-btn" class="dm-btn small accent">Terapkan Audio</button>
+      <div class="modal-foot">
+        <button id="refresh-dev-btn" class="tb-btn" type="button">Refresh Device</button>
+        <button id="apply-audio-btn" class="tb-btn tb-primary" type="button">Terapkan &amp; Simpan</button>
       </div>
     </div>
   </dialog>
 
-  <dialog id="remote-dialog" closedby="any" aria-labelledby="rd-title">
-    <form method="dialog" class="dialog-head">
-      <div>
-        <h2 id="rd-title">2-Way Mobile Remote (Wi-Fi)</h2>
-        <p class="dialog-sub">Sinkronisasi real-time fader, EQ, PFL, Mute &amp; Soundboard</p>
+  <dialog id="remote-dialog" class="modal-dialog" closedby="any">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>HP Remote Control (Wi-Fi 2-Arah)</h3>
+        <button class="tb-btn tb-close" type="button" data-close-dialog="remote-dialog">✕</button>
       </div>
-      <button type="submit" class="dm-btn small" value="close">Tutup</button>
-    </form>
-    <div class="dialog-body">
-      <p class="remote-copy">Buka alamat di bawah ini di browser HP (dalam jaringan Wi-Fi yang sama):</p>
-      <ul id="lan-list" class="lan-list"></ul>
-      <div class="dialog-actions">
-        <button type="button" id="reset-all-btn" class="dm-btn small danger">Reset Default Mixer</button>
+      <div class="modal-body">
+        <p class="modal-hint">
+          Buka salah satu alamat ini di browser HP (pastikan HP &amp; komputer berada di jaringan Wi-Fi yang sama):
+        </p>
+        <ul id="lan-list" class="lan-list"></ul>
+      </div>
+      <div class="modal-foot">
+        <button id="reset-all-btn" class="tb-btn tb-danger" type="button">Reset Mixer Default</button>
+        <button class="tb-btn tb-primary" type="button" data-close-dialog="remote-dialog">Tutup</button>
       </div>
     </div>
   </dialog>
 
-  <script type="module" src="/app.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
