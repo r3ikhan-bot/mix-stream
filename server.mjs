@@ -572,6 +572,20 @@ server.on('upgrade', (req, socket) => {
 
 let desktopProc = null;
 
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error(`[Server] Port ${PORT} sedang dipakai oleh StudioStream instance lain.`);
+    engine.stop();
+    if (IS_MAC && LAUNCH_DESKTOP && fs.existsSync(DESKTOP_BIN)) {
+      desktopProc = spawn(DESKTOP_BIN, [`http://127.0.0.1:${PORT}`], { stdio: 'inherit' });
+      desktopProc.on('exit', () => process.exit(0));
+      return;
+    }
+    process.exit(1);
+  }
+  throw err;
+});
+
 server.listen(PORT, HOST, () => {
   console.log('\n===============================================================');
   console.log(' StudioStream Mixer — Fender Studio One–style OBS/TTLS Console');
