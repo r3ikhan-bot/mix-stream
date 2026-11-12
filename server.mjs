@@ -12,7 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const ENGINE_DIR = path.join(__dirname, 'engine');
 const BUILD_DIR = path.join(__dirname, 'build');
-const SAMPLES_DIR = path.join(__dirname, 'samples');
+const SAMPLES_DIR = process.env.SAMPLES_DIR || path.join(__dirname, 'samples');
 const STATE_FILE = process.env.STATE_FILE || path.join(__dirname, 'state.json');
 
 const IS_WIN = process.platform === 'win32';

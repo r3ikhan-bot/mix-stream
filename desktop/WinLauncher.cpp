@@ -100,6 +100,21 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     const std::wstring appDir = getExeDir();
     SetCurrentDirectoryW(appDir.c_str());
 
+    // Persist state.json and uploaded samples in %APPDATA%\DM-Audio across portable updates
+    std::wstring appDataRoot = expandEnv(L"%AppData%\\DM-Audio");
+    if (!appDataRoot.empty()) {
+        CreateDirectoryW(appDataRoot.c_str(), nullptr);
+        std::wstring samplesDir = appDataRoot + L"\\samples";
+        CreateDirectoryW(samplesDir.c_str(), nullptr);
+        if (GetEnvironmentVariableW(L"STATE_FILE", nullptr, 0) == 0) {
+            std::wstring statePath = appDataRoot + L"\\state.json";
+            SetEnvironmentVariableW(L"STATE_FILE", statePath.c_str());
+        }
+        if (GetEnvironmentVariableW(L"SAMPLES_DIR", nullptr, 0) == 0) {
+            SetEnvironmentVariableW(L"SAMPLES_DIR", samplesDir.c_str());
+        }
+    }
+
     const std::wstring serverScript = appDir + L"\\server.mjs";
     if (!fileExists(serverScript)) {
         MessageBoxW(
