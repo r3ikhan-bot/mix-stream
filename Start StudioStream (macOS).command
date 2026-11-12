@@ -2,6 +2,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
+xattr -dr com.apple.quarantine "$PWD" 2>/dev/null || true
 
 NODE_BIN=""
 for candidate in "$PWD/runtime/node" "/opt/homebrew/bin/node" "/usr/local/bin/node" "$(command -v node || true)"; do

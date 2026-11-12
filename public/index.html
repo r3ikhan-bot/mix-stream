@@ -85,58 +85,85 @@
     </footer>
   </div>
 
-  <dialog id="audio-dialog" class="modal-dialog" closedby="any">
-    <div class="modal-card">
+  <dialog id="audio-dialog" class="modal-dialog modal-dialog-wide" closedby="any">
+    <div class="modal-card hw-modal-card">
       <div class="modal-head">
-        <h3>Pengaturan Audio Device &amp; Routing OBS</h3>
+        <h3>Hardware Setup</h3>
         <button class="tb-btn tb-close" type="button" data-close-dialog="audio-dialog">✕</button>
       </div>
-      <div class="modal-body">
-        <label class="field-row">
-          <span>Input Mic / Audio Interface (Ch 1-3)</span>
-          <select id="sel-input-dev"></select>
-        </label>
-        <label class="field-row">
-          <span>Input Musik / System Loopback (Ch 4-6 · BlackHole / VB-Cable)</span>
-          <select id="sel-music-input-dev"></select>
-        </label>
-        <label class="field-row">
-          <span>Monitor Output (Headphone Host)</span>
-          <select id="sel-mon-dev"></select>
-        </label>
-        <label class="field-row">
-          <span>Stream Output (ke OBS / TikTok Live Studio)</span>
-          <select id="sel-stream-dev"></select>
-        </label>
-        <label class="field-row">
-          <span>Buffer Size (Latensi)</span>
-          <select id="sel-buf-size">
-            <option value="128">128 samples (~2.7 ms)</option>
-            <option value="256" selected>256 samples (~5.3 ms)</option>
-            <option value="512">512 samples (~10.7 ms)</option>
-            <option value="1024">1024 samples (~21.3 ms)</option>
-          </select>
-        </label>
-        <label class="field-row">
-          <span>Sample Rate Audio Interface</span>
-          <select id="sel-sample-rate">
-            <option value="0">Auto (Ikuti Hardware Interface)</option>
-            <option value="44100">44100 Hz (44.1 kHz)</option>
-            <option value="48000">48000 Hz (48 kHz · OBS Default)</option>
-            <option value="88200">88200 Hz (88.2 kHz)</option>
-            <option value="96000">96000 Hz (96 kHz)</option>
-          </select>
-        </label>
-        <div id="audio-hw-meta" class="modal-hint">
-          Membaca info driver &amp; sample rate hardware...
-        </div>
-        <p class="modal-hint">
-          Tips: Arahkan <b>Stream Output</b> ke virtual cable (mis. <i>BlackHole 2ch</i> / <i>VB-Cable</i>) lalu pilih virtual cable itu sebagai Mic/Audio Input di OBS Studio atau TikTok Live Studio.
-        </p>
+      <div class="hw-tabs" role="tablist">
+        <button class="hw-tab active" type="button" data-hw-tab="hardware">Hardware</button>
+        <button class="hw-tab" type="button" data-hw-tab="settings">Settings</button>
+        <button class="hw-tab" type="button" data-hw-tab="routing">I/O Map</button>
       </div>
-      <div class="modal-foot">
+      <div class="modal-body hw-body">
+        <div class="hw-panel active" id="hw-panel-hardware">
+          <div class="hw-section-title">Audio Hardware</div>
+          <p class="hw-section-sub">
+            Pilih perangkat untuk peran <b>MIC</b> (Ch 1–2), <b>LOOP</b> (Ch 3–6), <b>OBS</b> (Stream Out), dan <b>MON</b> (Headphone). Klik ulang untuk lepas/auto-default.
+          </p>
+          <div id="hw-device-list" class="hw-device-list"></div>
+          <div id="hw-summary-bar" class="hw-summary-bar">Memuat daftar perangkat...</div>
+        </div>
+
+        <div class="hw-panel" id="hw-panel-settings">
+          <div id="hw-settings-chain" class="hw-settings-chain">Default System Audio</div>
+          <p class="hw-section-sub">
+            Sample rate dan buffer size diterapkan langsung ke CoreAudio / WASAPI engine dan tersimpan otomatis di konfigurasi mixer.
+          </p>
+          <div class="hw-settings-grid">
+            <label class="field-row">
+              <span>Sample rate</span>
+              <select id="sel-sample-rate">
+                <option value="0">Auto (Ikuti Hardware Interface)</option>
+                <option value="44100">44100 Hz</option>
+                <option value="48000">48000 Hz</option>
+                <option value="88200">88200 Hz</option>
+                <option value="96000">96000 Hz</option>
+              </select>
+            </label>
+            <label class="field-row">
+              <span>Buffer size</span>
+              <select id="sel-buf-size">
+                <option value="64">64 samples</option>
+                <option value="128">128 samples</option>
+                <option value="256" selected>256 samples</option>
+                <option value="512">512 samples</option>
+                <option value="1024">1024 samples</option>
+              </select>
+            </label>
+            <div class="field-row">
+              <span>Inputs in use</span>
+              <div id="hw-inputs-in-use" class="hw-readonly-box">-</div>
+            </div>
+            <div class="field-row">
+              <span>Outputs in use</span>
+              <div id="hw-outputs-in-use" class="hw-readonly-box">-</div>
+            </div>
+          </div>
+          <div id="hw-latency-info" class="hw-latency-info">Round trip buffer ~10.7 ms</div>
+          <div id="audio-hw-meta" class="modal-hint">
+            Membaca info driver &amp; sample rate hardware...
+          </div>
+        </div>
+
+        <div class="hw-panel" id="hw-panel-routing">
+          <div class="hw-section-title">Channel &amp; Bus I/O Map</div>
+          <p class="hw-section-sub">
+            Pemetaan otomatis channel DM12 ke perangkat yang dipilih pada tab Hardware.
+          </p>
+          <div id="hw-routing-map" class="hw-routing-map"></div>
+          <p class="modal-hint">
+            Tips OBS / TikTok Live: Pilih virtual cable (mis. <i>GP Stream</i> / <i>BlackHole 2ch</i> / <i>VB-Cable</i>) sebagai <b>OBS</b>, lalu pilih device tersebut sebagai Mic/Audio Input di OBS Studio.
+          </p>
+        </div>
+      </div>
+      <div class="modal-foot hw-foot">
         <button id="refresh-dev-btn" class="tb-btn" type="button">Refresh Device</button>
-        <button id="apply-audio-btn" class="tb-btn tb-primary" type="button">Terapkan &amp; Simpan</button>
+        <div class="hw-foot-right">
+          <button class="tb-btn" type="button" data-close-dialog="audio-dialog">Batal</button>
+          <button id="apply-audio-btn" class="tb-btn tb-primary" type="button">Apply</button>
+        </div>
       </div>
     </div>
   </dialog>

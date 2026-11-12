@@ -101,15 +101,26 @@
   const stopPadsBtn = document.getElementById('stop-pads-btn');
   const wavUploadInput = document.getElementById('wav-upload-input');
   const audioDialog = document.getElementById('audio-dialog');
-  const selInputDev = document.getElementById('sel-input-dev');
-  const selMusicInputDev = document.getElementById('sel-music-input-dev');
-  const selMonDev = document.getElementById('sel-mon-dev');
-  const selStreamDev = document.getElementById('sel-stream-dev');
+  const hwDeviceList = document.getElementById('hw-device-list');
+  const hwSummaryBar = document.getElementById('hw-summary-bar');
+  const hwSettingsChain = document.getElementById('hw-settings-chain');
+  const hwInputsInUse = document.getElementById('hw-inputs-in-use');
+  const hwOutputsInUse = document.getElementById('hw-outputs-in-use');
+  const hwLatencyInfo = document.getElementById('hw-latency-info');
+  const hwRoutingMap = document.getElementById('hw-routing-map');
   const selBufSize = document.getElementById('sel-buf-size');
   const selSampleRate = document.getElementById('sel-sample-rate');
   const audioHwMeta = document.getElementById('audio-hw-meta');
   const refreshDevBtn = document.getElementById('refresh-dev-btn');
   const applyAudioBtn = document.getElementById('apply-audio-btn');
+  let draftAudioConfig = {
+    inputDevId: '',
+    musicInputDevId: '',
+    monitorOutDevId: '',
+    streamOutDevId: '',
+    bufferSize: 256,
+    sampleRate: 0,
+  };
   const presetSelect = document.getElementById('preset-select');
   const savePresetBtn = document.getElementById('save-preset-btn');
   const presetDialog = document.getElementById('preset-dialog');
@@ -354,28 +365,31 @@
     });
   }
 
+  function findDeviceForRole(id, isIn) {
+    if (!id || id === 'default') {
+      return devices.find((d) => (isIn ? d.defIn : d.defOut)) || devices.find((d) => (isIn ? d.in > 0 : d.out > 0)) || devices[0];
+    }
+    return devices.find((d) => d.id === id);
+  }
+
   function updateAudioHardwareMeta() {
     if (!audioHwMeta || !selSampleRate) return;
-    const findDev = (id, isIn) => {
-      if (!id || id === 'default') {
-        return devices.find((d) => (isIn ? d.defIn : d.defOut)) || devices[0];
-      }
-      return devices.find((d) => d.id === id);
-    };
-
-    const inDev = findDev(selInputDev.value, true);
-    const outDev = findDev(selMonDev.value, false);
+    const inDev = findDeviceForRole(draftAudioConfig.inputDevId, true);
+    const loopDev = draftAudioConfig.musicInputDevId ? devices.find((d) => d.id === draftAudioConfig.musicInputDevId) : null;
+    const outDev = findDeviceForRole(draftAudioConfig.monitorOutDevId, false);
+    const streamDev = draftAudioConfig.streamOutDevId ? devices.find((d) => d.id === draftAudioConfig.streamOutDevId) : null;
     const refDev = inDev || outDev;
+
     const rateSet = new Set([44100, 48000, 88200, 96000]);
     if (inDev?.sampleRates) inDev.sampleRates.forEach((r) => rateSet.add(r));
     if (outDev?.sampleRates) outDev.sampleRates.forEach((r) => rateSet.add(r));
 
-    const prevSr = selSampleRate.value || String(appState?.audioConfig?.sampleRate || 0);
+    const prevSr = selSampleRate.value || String(draftAudioConfig.sampleRate || 0);
     selSampleRate.innerHTML = '';
     const autoOpt = document.createElement('option');
     autoOpt.value = '0';
     const liveSr = Math.round(audioStatus?.sampleRate || refDev?.sampleRate || 48000);
-    autoOpt.textContent = `Auto (Ikuti Device · ${liveSr} Hz)`;
+    autoOpt.textContent = `Auto (Ikuti Hardware · ${liveSr} Hz)`;
     selSampleRate.appendChild(autoOpt);
 
     Array.from(rateSet)
@@ -391,10 +405,147 @@
       });
     selSampleRate.value = Array.from(selSampleRate.options).some((o) => o.value === prevSr) ? prevSr : '0';
 
+    const selectedSr = Number(selSampleRate.value || 0) || liveSr;
+    const buf = Number(selBufSize?.value || draftAudioConfig.bufferSize || 256);
+    const rtMs = ((2 * buf) / Math.max(selectedSr, 44100)) * 1000;
+    if (hwLatencyInfo) {
+      hwLatencyInfo.textContent = `Round trip buffer about ${rtMs.toFixed(1)} ms (2 × ${buf} samples @ ${selectedSr} Hz)`;
+    }
+
+    const chainNames = [inDev?.name, loopDev?.name, streamDev?.name, outDev?.name].filter(Boolean);
+    const uniqueChain = Array.from(new Set(chainNames));
+    if (hwSettingsChain) {
+      hwSettingsChain.textContent = uniqueChain.length ? uniqueChain.join(' + ') : 'Default System Audio';
+    }
+    if (hwInputsInUse) {
+      const inParts = [];
+      if (inDev) inParts.push(`Mic: ${inDev.name} (${inDev.in} in)`);
+      if (loopDev) inParts.push(`Loop: ${loopDev.name} (${loopDev.in} in)`);
+      hwInputsInUse.textContent = inParts.length ? inParts.join(' · ') : 'Default System Mic';
+    }
+    if (hwOutputsInUse) {
+      const outParts = [];
+      if (streamDev) outParts.push(`OBS: ${streamDev.name} (${streamDev.out} out)`);
+      if (outDev) outParts.push(`MON: ${outDev.name} (${outDev.out} out)`);
+      hwOutputsInUse.textContent = outParts.length ? outParts.join(' · ') : 'Default Speakers / Headphones';
+    }
+
+    const totalIn = (inDev?.in || 0) + (loopDev && loopDev.id !== inDev?.id ? loopDev.in || 0 : 0);
+    const totalOut = (outDev?.out || 0) + (streamDev && streamDev.id !== outDev?.id ? streamDev.out || 0 : 0);
+    if (hwSummaryBar) {
+      hwSummaryBar.textContent = `${devices.length} devices · Active I/O: ${totalIn} in / ${totalOut} out · Mic: ${inDev?.name || 'Auto'} · Stream: ${streamDev?.name || 'None'}`;
+    }
+
+    if (hwRoutingMap) {
+      const chs = appState?.channels || [];
+      const rows = [
+        { ch: `${chs[0]?.name || 'Audio 1'} (Ch 1)`, dest: `${inDev?.name || 'Default Mic'} · In 1 (${chs[0]?.stereoInput ? 'Stereo' : 'Mono'})` },
+        { ch: `${chs[1]?.name || 'Audio 2'} (Ch 2)`, dest: `${inDev?.name || 'Default Mic'} · In 2 (${chs[1]?.stereoInput ? 'Stereo' : 'Mono'})` },
+        { ch: `${chs[2]?.name || 'Audio 3'} – ${chs[5]?.name || 'Audio 6'}`, dest: `${loopDev?.name || 'Internal / Loopback'} (Stereo)` },
+        { ch: `${chs[6]?.name || 'BGM / Music'} & Soundboard`, dest: 'Internal WAV / Sample Engine' },
+        { ch: 'STREAM Bus (OBS)', dest: streamDev?.name || 'Belum dipilih (pilih role OBS)' },
+        { ch: 'MONITOR Bus (Phones)', dest: outDev?.name || 'Default Speakers / Headphones' },
+      ];
+      hwRoutingMap.innerHTML = '';
+      rows.forEach((r) => {
+        const card = document.createElement('div');
+        card.className = 'hw-route-card';
+        card.innerHTML = `<div class="hw-route-ch"></div><div class="hw-route-dest"></div>`;
+        card.firstChild.textContent = r.ch;
+        card.lastChild.textContent = r.dest;
+        hwRoutingMap.appendChild(card);
+      });
+    }
+
     const drv = refDev?.driver || 'CoreAudio/WASAPI';
     const inRatesText = inDev?.sampleRates?.length ? `${inDev.sampleRates.join('/')} Hz` : `${inDev?.sampleRate || liveSr} Hz`;
     const outRatesText = outDev?.sampleRates?.length ? `${outDev.sampleRates.join('/')} Hz` : `${outDev?.sampleRate || liveSr} Hz`;
     audioHwMeta.textContent = `Driver: ${drv} · Aktif: ${liveSr} Hz | Mic: ${inDev?.name || '-'} (${inRatesText}) | Monitor: ${outDev?.name || '-'} (${outRatesText})`;
+  }
+
+  function renderHardwareDeviceList() {
+    if (!hwDeviceList) return;
+    hwDeviceList.innerHTML = '';
+    if (!devices.length) {
+      const empty = document.createElement('div');
+      empty.className = 'modal-hint';
+      empty.textContent = 'Belum ada audio device terdeteksi. Klik Refresh Device.';
+      hwDeviceList.appendChild(empty);
+      return;
+    }
+
+    devices.forEach((dev) => {
+      const isMic = draftAudioConfig.inputDevId === dev.id;
+      const isLoop = draftAudioConfig.musicInputDevId === dev.id;
+      const isObs = draftAudioConfig.streamOutDevId === dev.id;
+      const isMon = draftAudioConfig.monitorOutDevId === dev.id;
+      const hasRole = isMic || isLoop || isObs || isMon;
+
+      const row = document.createElement('div');
+      row.className = `hw-device-row${hasRole ? ' has-role' : ''}`;
+
+      const info = document.createElement('div');
+      info.className = 'hw-dev-info';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'hw-dev-name';
+      nameEl.textContent = dev.name;
+      const subEl = document.createElement('div');
+      subEl.className = 'hw-dev-sub';
+      const lower = (dev.name || '').toLowerCase();
+      const isVirtual = lower.includes('gp stream') || lower.includes('blackhole') || lower.includes('cable') || lower.includes('loopback');
+      const srTxt = dev.sampleRate ? `${Math.round(dev.sampleRate)} Hz` : '';
+      subEl.textContent = [isVirtual ? 'Virtual audio cable' : (dev.driver || 'Audio device'), srTxt, dev.defIn ? 'Default In' : '', dev.defOut ? 'Default Out' : '']
+        .filter(Boolean)
+        .join(' · ');
+      info.appendChild(nameEl);
+      info.appendChild(subEl);
+
+      const ioEl = document.createElement('div');
+      ioEl.className = 'hw-dev-io';
+      ioEl.textContent = `${dev.in} in / ${dev.out} out`;
+
+      const roles = document.createElement('div');
+      roles.className = 'hw-role-group';
+
+      const makeRoleBtn = (label, cls, active, onClick) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `hw-role-btn ${cls}${active ? ' active' : ''}`;
+        btn.textContent = label;
+        btn.addEventListener('click', onClick);
+        return btn;
+      };
+
+      if (dev.in > 0) {
+        roles.appendChild(makeRoleBtn('MIC', 'role-mic', isMic, () => {
+          draftAudioConfig.inputDevId = isMic ? '' : dev.id;
+          renderHardwareDeviceList();
+          updateAudioHardwareMeta();
+        }));
+        roles.appendChild(makeRoleBtn('LOOP', 'role-loop', isLoop, () => {
+          draftAudioConfig.musicInputDevId = isLoop ? '' : dev.id;
+          renderHardwareDeviceList();
+          updateAudioHardwareMeta();
+        }));
+      }
+      if (dev.out > 0) {
+        roles.appendChild(makeRoleBtn('OBS', 'role-obs', isObs, () => {
+          draftAudioConfig.streamOutDevId = isObs ? '' : dev.id;
+          renderHardwareDeviceList();
+          updateAudioHardwareMeta();
+        }));
+        roles.appendChild(makeRoleBtn('MON', 'role-mon', isMon, () => {
+          draftAudioConfig.monitorOutDevId = isMon ? '' : dev.id;
+          renderHardwareDeviceList();
+          updateAudioHardwareMeta();
+        }));
+      }
+
+      row.appendChild(info);
+      row.appendChild(ioEl);
+      row.appendChild(roles);
+      hwDeviceList.appendChild(row);
+    });
   }
 
   function shortDeviceName(id, fallback) {
@@ -405,35 +556,18 @@
   }
 
   function populateDeviceSelects() {
-    const inputs = devices.filter((d) => d.in > 0);
-    const outputs = devices.filter((d) => d.out > 0);
     const cfg = appState?.audioConfig || {};
-
-    const fill = (sel, list, current, emptyLabel) => {
-      const prev = current || sel.value;
-      sel.innerHTML = '';
-      const defOpt = document.createElement('option');
-      defOpt.value = '';
-      defOpt.textContent = emptyLabel;
-      sel.appendChild(defOpt);
-      for (const dev of list) {
-        const opt = document.createElement('option');
-        opt.value = dev.id;
-        const srTag = dev.sampleRate ? ` · ${Math.round(dev.sampleRate)}Hz` : '';
-        opt.textContent = `${dev.name} (${dev.in}in/${dev.out}out${srTag})`;
-        if (dev.id === prev) opt.selected = true;
-        sel.appendChild(opt);
-      }
+    draftAudioConfig = {
+      inputDevId: cfg.inputDevId || '',
+      musicInputDevId: cfg.musicInputDevId || '',
+      monitorOutDevId: cfg.monitorOutDevId || '',
+      streamOutDevId: cfg.streamOutDevId || '',
+      bufferSize: Number(cfg.bufferSize || 256),
+      sampleRate: Number(cfg.sampleRate || 0),
     };
-
-    fill(selInputDev, inputs, cfg.inputDevId, 'Default System Mic');
-    fill(selMusicInputDev, inputs, cfg.musicInputDevId, 'Tidak dipakai / BGM Internal');
-    fill(selMonDev, outputs, cfg.monitorOutDevId, 'Default Speakers / Headphones');
-    fill(selStreamDev, outputs, cfg.streamOutDevId, 'Virtual Cable (OBS / TikTok Live)');
-    if (cfg.bufferSize) selBufSize.value = String(cfg.bufferSize);
-    if (selSampleRate && cfg.sampleRate !== undefined) {
-      selSampleRate.value = String(cfg.sampleRate || 0);
-    }
+    if (selBufSize) selBufSize.value = String(draftAudioConfig.bufferSize);
+    if (selSampleRate) selSampleRate.value = String(draftAudioConfig.sampleRate);
+    renderHardwareDeviceList();
     updateAudioHardwareMeta();
   }
 
@@ -2316,12 +2450,28 @@
 
   audioSetupBtn.addEventListener('click', () => {
     sendWs({ type: 'refresh_devices' });
-    updateAudioHardwareMeta();
+    populateDeviceSelects();
     audioDialog.showModal();
   });
 
-  selInputDev.addEventListener('change', updateAudioHardwareMeta);
-  selMonDev.addEventListener('change', updateAudioHardwareMeta);
+  document.querySelectorAll('[data-hw-tab]').forEach((tabBtn) => {
+    tabBtn.addEventListener('click', () => {
+      const target = tabBtn.dataset.hwTab;
+      document.querySelectorAll('[data-hw-tab]').forEach((b) => b.classList.toggle('active', b === tabBtn));
+      document.querySelectorAll('.hw-panel').forEach((panel) => {
+        panel.classList.toggle('active', panel.id === `hw-panel-${target}`);
+      });
+    });
+  });
+
+  selBufSize?.addEventListener('change', () => {
+    draftAudioConfig.bufferSize = Number(selBufSize.value || 256);
+    updateAudioHardwareMeta();
+  });
+  selSampleRate?.addEventListener('change', () => {
+    draftAudioConfig.sampleRate = Number(selSampleRate.value || 0);
+    updateAudioHardwareMeta();
+  });
 
   presetSelect?.addEventListener('change', () => {
     const id = presetSelect.value;
@@ -2365,16 +2515,16 @@
 
   applyAudioBtn.addEventListener('click', () => {
     const config = {
-      inputDevId: selInputDev.value,
-      musicInputDevId: selMusicInputDev.value,
-      monitorOutDevId: selMonDev.value,
-      streamOutDevId: selStreamDev.value,
-      bufferSize: Number(selBufSize.value || 256),
-      sampleRate: Number(selSampleRate?.value || 0),
+      inputDevId: draftAudioConfig.inputDevId || '',
+      musicInputDevId: draftAudioConfig.musicInputDevId || '',
+      monitorOutDevId: draftAudioConfig.monitorOutDevId || '',
+      streamOutDevId: draftAudioConfig.streamOutDevId || '',
+      bufferSize: Number(selBufSize?.value || draftAudioConfig.bufferSize || 256),
+      sampleRate: Number(selSampleRate?.value || draftAudioConfig.sampleRate || 0),
     };
     sendWs({ type: 'audio_config', config });
     audioDialog.close();
-    setReadout('Konfigurasi Audio Interface diterapkan');
+    setReadout('Konfigurasi Hardware Setup diterapkan');
   });
 
   resetAllBtn.addEventListener('click', async () => {
