@@ -7,6 +7,7 @@ const app = {
   reconnectTimer: null,
   reconnectDelay: 800,
   uploadPadIdx: 0,
+  meterBus: 'stream', // 'stream' | 'monitor'
 };
 
 const dom = {
@@ -48,6 +49,10 @@ const dom = {
   resetAllBtn: document.getElementById('reset-all-btn'),
 };
 
+const DM_SCALE_TICKS = ['10', '5', '0', '5', '10', '20', '30', '40', '50', '∞'];
+const LED_THRESHOLDS_DB = [-36, -28, -22, -16, -12, -9, -6, -3, 0, 3, 6, 10];
+const SOURCE_LABELS = ['Mic HW', 'BGM+Loop', 'Loopback', 'Soundboard', 'FX Bus'];
+
 function syncSlider(el) {
   el.style.setProperty('--attr-min', el.min || '0');
   el.style.setProperty('--attr-max', el.max || '100');
@@ -71,7 +76,7 @@ function linearSliderToDb(pos) {
 
 function formatDb(db) {
   if (db <= -89) return '-∞';
-  return `${db > 0 ? '+' : ''}${Number(db).toFixed(1)} dB`;
+  return `${db > 0 ? '+' : ''}${Number(db).toFixed(1)}`;
 }
 
 function dbToMeterPct(db) {
@@ -115,6 +120,111 @@ function setGlobalParam(key, value) {
   sendWs({ type: 'global_param', key, value });
 }
 
+function createRotaryKnob({ label, value, min, max, step, defaultVal, capClass, formatVal, onChange }) {
+  const cell = document.createElement('div');
+  cell.className = 'knob-cell';
+
+  const lbl = document.createElement('div');
+  lbl.className = 'knob-lbl';
+  const nameSpan = document.createElement('span');
+  nameSpan.textContent = label;
+  const valSpan = document.createElement('span');
+  valSpan.className = 'knob-val-sub';
+  lbl.append(nameSpan, valSpan);
+
+  const dial = document.createElement('div');
+  dial.className = `rotary ${capClass || 'cap-dark'}`;
+  dial.tabIndex = 0;
+  dial.setAttribute('role', 'slider');
+  dial.setAttribute('aria-label', label);
+  dial.setAttribute('aria-valuemin', String(min));
+  dial.setAttribute('aria-valuemax', String(max));
+
+  let cur = Math.max(min, Math.min(max, Number(value)));
+
+  const syncVisual = (v) => {
+    cur = Math.max(min, Math.min(max, v));
+    const norm = (cur - min) / (max - min || 1);
+    const angle = -135 + norm * 270;
+    dial.style.setProperty('--angle', `${angle.toFixed(1)}deg`);
+    dial.setAttribute('aria-valuenow', String(cur));
+    valSpan.textContent = formatVal ? formatVal(cur) : String(cur);
+  };
+  syncVisual(cur);
+
+  const commit = (nextVal) => {
+    const snapped = Math.round((nextVal - min) / step) * step + min;
+    const clamped = Number(Math.max(min, Math.min(max, snapped)).toFixed(3));
+    if (clamped === cur) return;
+    syncVisual(clamped);
+    onChange(clamped);
+  };
+
+  let dragging = false;
+  let startY = 0;
+  let startVal = cur;
+
+  dial.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    dragging = true;
+    startY = e.clientY;
+    startVal = cur;
+    dial.setPointerCapture(e.pointerId);
+    dial.focus();
+  });
+
+  dial.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const delta = (startY - e.clientY) / 115;
+    commit(startVal + delta * (max - min));
+  });
+
+  const endDrag = () => {
+    dragging = false;
+  };
+  dial.addEventListener('pointerup', endDrag);
+  dial.addEventListener('pointercancel', endDrag);
+
+  dial.addEventListener(
+    'wheel',
+    (e) => {
+      e.preventDefault();
+      const dir = e.deltaY < 0 ? 1 : -1;
+      const mult = e.shiftKey ? 0.25 : 1;
+      commit(cur + dir * step * mult * 2);
+    },
+    { passive: false },
+  );
+
+  dial.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      commit(cur + step);
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') {
+      e.preventDefault();
+      commit(cur - step);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      commit(defaultVal);
+    }
+  });
+
+  addDoubleTapReset(dial, () => commit(defaultVal));
+  cell.append(lbl, dial);
+  return cell;
+}
+
+function createDmScale() {
+  const col = document.createElement('div');
+  col.className = 'dm-scale';
+  for (const t of DM_SCALE_TICKS) {
+    const sp = document.createElement('span');
+    sp.textContent = t;
+    col.append(sp);
+  }
+  return col;
+}
+
 function connectWs() {
   clearTimeout(app.reconnectTimer);
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -141,7 +251,6 @@ function connectWs() {
         app.devices = msg.devices || [];
         app.audioStatus = msg.audioStatus || app.audioStatus;
         app.lanUrls = msg.lanUrls || [];
-        if (window.innerWidth <= 900) dom.fatPanel.hidden = true;
         renderAll();
         break;
       case 'full_state':
@@ -151,6 +260,7 @@ function connectWs() {
       case 'devices':
         app.devices = msg.devices || [];
         populateDeviceSelects();
+        renderMasters();
         break;
       case 'audio_status':
         app.audioStatus = msg.status;
@@ -163,7 +273,9 @@ function connectWs() {
         if (app.state?.channels[msg.index]) {
           app.state.channels[msg.index][msg.key] = msg.value;
           renderConsole();
-          if (app.state.selectedChannel === msg.index) renderFatChannel();
+          if (!dom.fatPanel.hidden && app.state.selectedChannel === msg.index) {
+            renderFatChannel();
+          }
         }
         break;
       case 'global_update':
@@ -177,7 +289,7 @@ function connectWs() {
         if (app.state) {
           app.state.selectedChannel = msg.index;
           renderConsole();
-          renderFatChannel();
+          if (!dom.fatPanel.hidden) renderFatChannel();
         }
         break;
       case 'pad_hit':
@@ -198,31 +310,42 @@ function connectWs() {
   ws.addEventListener('error', () => ws.close());
 }
 
+function updateLedColumn(colEl, peakDb) {
+  if (!colEl) return;
+  const segs = colEl.children;
+  for (let i = 0; i < segs.length; i++) {
+    segs[i].classList.toggle('on', peakDb >= LED_THRESHOLDS_DB[i]);
+  }
+}
+
 function updateLiveMeters(m) {
   if (!m) return;
   if (Array.isArray(m.ch)) {
     m.ch.forEach((pair, idx) => {
-      const lEl = document.querySelector(`[data-meter="ch-${idx}-l"]`);
-      const rEl = document.querySelector(`[data-meter="ch-${idx}-r"]`);
-      if (lEl) lEl.style.setProperty('--meter-pct', `${dbToMeterPct(pair[0])}%`);
-      if (rEl) rEl.style.setProperty('--meter-pct', `${dbToMeterPct(pair[1])}%`);
+      const peakMax = Math.max(Number(pair[0] ?? -90), Number(pair[1] ?? -90));
+      const meterEl = document.querySelector(`[data-ch-meter="${idx}"]`);
+      if (meterEl) meterEl.style.setProperty('--meter-pct', `${dbToMeterPct(peakMax)}%`);
+      const peakLed = document.querySelector(`[data-ch-peak="${idx}"]`);
+      if (peakLed) peakLed.classList.toggle('is-hot', peakMax >= -4.0);
       if (app.state?.selectedChannel === idx) {
         const grEl = document.getElementById('fat-comp-gr');
         if (grEl) grEl.textContent = `GR: -${Number(pair[2] || 0).toFixed(1)} dB`;
       }
     });
   }
+
+  const activePair = app.meterBus === 'monitor' ? m.monitor : m.stream;
+  if (Array.isArray(activePair)) {
+    updateLedColumn(document.getElementById('master-led-l'), activePair[0]);
+    updateLedColumn(document.getElementById('master-led-r'), activePair[1]);
+  }
   if (Array.isArray(m.stream)) {
-    const sl = document.querySelector('[data-meter="stream-l"]');
-    const sr = document.querySelector('[data-meter="stream-r"]');
-    if (sl) sl.style.setProperty('--meter-pct', `${dbToMeterPct(m.stream[0])}%`);
-    if (sr) sr.style.setProperty('--meter-pct', `${dbToMeterPct(m.stream[1])}%`);
+    const sl = document.querySelector('[data-master-meter="stream"]');
+    if (sl) sl.style.setProperty('--meter-pct', `${dbToMeterPct(Math.max(m.stream[0], m.stream[1]))}%`);
   }
   if (Array.isArray(m.monitor)) {
-    const ml = document.querySelector('[data-meter="mon-l"]');
-    const mr = document.querySelector('[data-meter="mon-r"]');
-    if (ml) ml.style.setProperty('--meter-pct', `${dbToMeterPct(m.monitor[0])}%`);
-    if (mr) mr.style.setProperty('--meter-pct', `${dbToMeterPct(m.monitor[1])}%`);
+    const ml = document.querySelector('[data-master-meter="monitor"]');
+    if (ml) ml.style.setProperty('--meter-pct', `${dbToMeterPct(Math.max(m.monitor[0], m.monitor[1]))}%`);
   }
   if (typeof m.duckDb === 'number') {
     dom.duckDbBadge.textContent = m.duckDb < -0.5 ? `${m.duckDb.toFixed(1)} dB` : '0 dB';
@@ -239,7 +362,7 @@ function syncTopStatus() {
   const bgmPlaying = Boolean(app.state.globals.bgmPlaying);
   const bgmLoop = app.state.globals.bgmLoop !== false;
   dom.bgmPlayBtn.setAttribute('aria-pressed', String(bgmPlaying));
-  dom.bgmPlayBtn.textContent = bgmPlaying ? 'Pause BGM' : 'Play BGM';
+  dom.bgmPlayBtn.textContent = bgmPlaying ? 'Pause' : 'Play';
   dom.bgmLoopBtn.setAttribute('aria-pressed', String(bgmLoop));
   dom.bgmTrackLabel.textContent = app.state.bgm?.trackName
     ? `BGM: ${app.state.bgm.trackName}`
@@ -261,31 +384,29 @@ function renderSceneBar() {
   }
 }
 
-function createLedMeterPair(idPrefix) {
-  const pair = document.createElement('div');
-  pair.className = 'meter-pair';
-  for (const side of ['l', 'r']) {
-    const col = document.createElement('div');
-    col.className = 'meter-col';
-    const fill = document.createElement('div');
-    fill.className = 'meter-fill';
-    fill.dataset.meter = `${idPrefix}-${side}`;
-    col.append(fill);
-    pair.append(col);
-  }
-  return pair;
+function resolveDeviceShortName(devId, fallbackText) {
+  if (!devId || devId === 'none') return 'Off';
+  if (devId === 'default') return fallbackText || 'System Default';
+  const found = app.devices.find((d) => d.id === devId);
+  return found ? found.name : devId;
 }
 
-function createDbScale() {
-  const scale = document.createElement('div');
-  scale.className = 'db-scale';
-  scale.setAttribute('aria-hidden', 'true');
-  for (const mark of ['+10', '+5', '0', '-5', '-15', '-30', '-∞']) {
-    const s = document.createElement('span');
-    s.textContent = mark;
-    scale.append(s);
+function describeChannelInput(ch) {
+  const mode = Number(ch.sourceMode ?? 0);
+  if (mode === 0) {
+    const dev = resolveDeviceShortName(app.state.audioConfig?.inputDevId, 'Default Mic');
+    return `In${Number(ch.inputChannelOffset || 0) + 1}: ${dev}`;
   }
-  return scale;
+  if (mode === 1) {
+    if (app.state.bgm?.trackName) return `Deck: ${app.state.bgm.trackName}`;
+    const mus = resolveDeviceShortName(app.state.audioConfig?.musicInputDevId, 'Loopback');
+    return mus === 'Off' ? 'BGM Deck / Loop' : mus;
+  }
+  if (mode === 2) {
+    const mus = resolveDeviceShortName(app.state.audioConfig?.musicInputDevId, 'Loopback');
+    return mus === 'Off' ? 'Loopback (Off)' : mus;
+  }
+  return SOURCE_LABELS[mode] || 'Input';
 }
 
 function renderConsole() {
@@ -293,149 +414,29 @@ function renderConsole() {
   dom.consoleRack.replaceChildren();
 
   for (const ch of app.state.channels) {
-    const strip = document.createElement('article');
-    strip.className = `s1-strip${app.state.selectedChannel === ch.index ? ' is-selected' : ''}`;
-    strip.style.setProperty('--ch-color', ch.color);
+    const isStereo = ch.faderColor === 'green';
+    const strip = document.createElement('div');
+    strip.className = `dm-strip${ch.index === app.state.selectedChannel ? ' is-selected' : ''}${isStereo ? ' is-stereo' : ''}`;
 
-    // Top Role Bar
-    const roleBar = document.createElement('div');
-    roleBar.className = 'strip-top-role';
-    const roleTxt = document.createElement('span');
-    roleTxt.textContent = ch.role;
-    const toneBtn = document.createElement('button');
-    toneBtn.type = 'button';
-    toneBtn.className = 'micro-btn';
-    toneBtn.setAttribute('aria-pressed', String(Boolean(ch.testTone)));
-    toneBtn.textContent = 'Tone';
-    toneBtn.title = 'Aktifkan nada uji untuk tes routing ke OBS / TTLS';
-    toneBtn.addEventListener('click', () => {
-      setChParam(ch.index, 'testTone', !ch.testTone);
-      toneBtn.setAttribute('aria-pressed', String(ch.testTone));
-    });
-    roleBar.append(roleTxt, toneBtn);
+    // Compact Top Patch / Input Slot
+    const patch = document.createElement('div');
+    patch.className = 'strip-patch';
 
-    // Input Controls (Trim, Phase, HPF)
-    const inputBlock = document.createElement('div');
-    inputBlock.className = 'strip-block';
-    const inHead = document.createElement('div');
-    inHead.className = 'block-head';
-    const inTitle = document.createElement('span');
-    inTitle.textContent = 'Input';
-    const inPills = document.createElement('div');
-    inPills.className = 'io-pills';
+    const patchTop = document.createElement('div');
+    patchTop.className = 'patch-top';
 
-    const phaseBtn = document.createElement('button');
-    phaseBtn.type = 'button';
-    phaseBtn.className = 'micro-btn';
-    phaseBtn.setAttribute('aria-pressed', String(Boolean(ch.phaseInvert)));
-    phaseBtn.textContent = 'Ø';
-    phaseBtn.addEventListener('click', () => {
-      setChParam(ch.index, 'phaseInvert', !ch.phaseInvert);
-      phaseBtn.setAttribute('aria-pressed', String(ch.phaseInvert));
-    });
+    const chBadge = document.createElement('span');
+    chBadge.className = 'ch-num-top';
+    chBadge.textContent = ch.index === 6 ? '7-8' : ch.index === 7 ? '9-10' : String(ch.index + 1);
 
-    const hpfBtn = document.createElement('button');
-    hpfBtn.type = 'button';
-    hpfBtn.className = 'micro-btn';
-    hpfBtn.setAttribute('aria-pressed', String(Boolean(ch.hpfOn)));
-    hpfBtn.textContent = 'HPF';
-    hpfBtn.addEventListener('click', () => {
-      setChParam(ch.index, 'hpfOn', !ch.hpfOn);
-      hpfBtn.setAttribute('aria-pressed', String(ch.hpfOn));
-    });
-
-    inPills.append(phaseBtn, hpfBtn);
-    inHead.append(inTitle, inPills);
-
-    const trimSlider = document.createElement('input');
-    trimSlider.type = 'range';
-    trimSlider.className = 'h-mini';
-    trimSlider.min = '-24';
-    trimSlider.max = '24';
-    trimSlider.step = '0.5';
-    trimSlider.value = String(ch.trimDb);
-    trimSlider.ariaLabel = `Input Trim ${ch.name}`;
-    syncSlider(trimSlider);
-    trimSlider.addEventListener('input', () => {
-      syncSlider(trimSlider);
-      setChParam(ch.index, 'trimDb', Number(trimSlider.value));
-    });
-    addDoubleTapReset(trimSlider, () => {
-      trimSlider.value = '0';
-      trimSlider.dispatchEvent(new Event('input'));
-    });
-
-    inputBlock.append(inHead, trimSlider);
-
-    // Studio One Inserts (Gate, EQ, Comp)
-    const insBlock = document.createElement('div');
-    insBlock.className = 'strip-block';
-    const insHead = document.createElement('div');
-    insHead.className = 'block-head';
-    insHead.textContent = 'Inserts';
-    insBlock.append(insHead);
-
-    const inserts = [
-      { key: 'gateOn', label: 'Gate' },
-      { key: 'eqOn', label: 'Pro EQ' },
-      { key: 'compOn', label: 'Comp' },
-    ];
-    for (const ins of inserts) {
-      const pill = document.createElement('div');
-      pill.className = 'insert-pill';
-      const led = document.createElement('button');
-      led.type = 'button';
-      led.className = `led-dot${ch[ins.key] ? ' is-on' : ''}`;
-      led.ariaLabel = `Toggle ${ins.label} ${ch.name}`;
-      led.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const next = !ch[ins.key];
-        setChParam(ch.index, ins.key, next);
-        led.classList.toggle('is-on', next);
-      });
-      const lbl = document.createElement('span');
-      lbl.className = 'insert-name';
-      lbl.textContent = ins.label;
-      pill.append(led, lbl);
-      pill.addEventListener('click', () => {
-        app.state.selectedChannel = ch.index;
-        dom.fatPanel.hidden = false;
-        syncTopStatus();
-        renderConsole();
-        renderFatChannel();
-      });
-      insBlock.append(pill);
-    }
-
-    // Sends & OBS / MON Routing
-    const sendBlock = document.createElement('div');
-    sendBlock.className = 'strip-block';
-    const sendHead = document.createElement('div');
-    sendHead.className = 'block-head';
-    sendHead.textContent = 'Sends & Out';
-
-    const revSlider = document.createElement('input');
-    revSlider.type = 'range';
-    revSlider.className = 'h-mini';
-    revSlider.min = '0';
-    revSlider.max = '1';
-    revSlider.step = '0.01';
-    revSlider.value = String(ch.reverbSend);
-    revSlider.ariaLabel = `Reverb Send ${ch.name}`;
-    syncSlider(revSlider);
-    revSlider.addEventListener('input', () => {
-      syncSlider(revSlider);
-      setChParam(ch.index, 'reverbSend', Number(revSlider.value));
-    });
-
-    const routeRow = document.createElement('div');
-    routeRow.className = 'route-row';
+    const miniRoutes = document.createElement('div');
+    miniRoutes.className = 'mini-routes';
 
     const obsBtn = document.createElement('button');
     obsBtn.type = 'button';
-    obsBtn.className = 'route-btn obs';
-    obsBtn.setAttribute('aria-pressed', String(Boolean(ch.routeStream)));
+    obsBtn.className = 'mini-pill obs';
     obsBtn.textContent = 'OBS';
+    obsBtn.setAttribute('aria-pressed', String(Boolean(ch.routeStream)));
     obsBtn.addEventListener('click', () => {
       setChParam(ch.index, 'routeStream', !ch.routeStream);
       obsBtn.setAttribute('aria-pressed', String(ch.routeStream));
@@ -443,60 +444,224 @@ function renderConsole() {
 
     const monBtn = document.createElement('button');
     monBtn.type = 'button';
-    monBtn.className = 'route-btn mon';
-    monBtn.setAttribute('aria-pressed', String(Boolean(ch.routeMonitor)));
+    monBtn.className = 'mini-pill mon';
     monBtn.textContent = 'MON';
+    monBtn.setAttribute('aria-pressed', String(Boolean(ch.routeMonitor)));
     monBtn.addEventListener('click', () => {
       setChParam(ch.index, 'routeMonitor', !ch.routeMonitor);
       monBtn.setAttribute('aria-pressed', String(ch.routeMonitor));
     });
 
-    routeRow.append(obsBtn, monBtn);
-    sendBlock.append(sendHead, revSlider, routeRow);
-
-    // Pan
-    const panBlock = document.createElement('div');
-    panBlock.className = 'strip-block';
-    const panSlider = document.createElement('input');
-    panSlider.type = 'range';
-    panSlider.className = 'h-mini';
-    panSlider.min = '-1';
-    panSlider.max = '1';
-    panSlider.step = '0.02';
-    panSlider.value = String(ch.pan);
-    panSlider.ariaLabel = `Pan ${ch.name}`;
-    syncSlider(panSlider);
-    panSlider.addEventListener('input', () => {
-      syncSlider(panSlider);
-      setChParam(ch.index, 'pan', Number(panSlider.value));
+    const dspBtn = document.createElement('button');
+    dspBtn.type = 'button';
+    dspBtn.className = 'mini-pill dsp';
+    dspBtn.textContent = 'DSP';
+    dspBtn.addEventListener('click', () => {
+      app.state.selectedChannel = ch.index;
+      dom.fatPanel.hidden = false;
+      syncTopStatus();
+      renderConsole();
+      renderFatChannel();
     });
-    addDoubleTapReset(panSlider, () => {
-      panSlider.value = '0';
-      panSlider.dispatchEvent(new Event('input'));
+
+    miniRoutes.append(obsBtn, monBtn, dspBtn);
+    patchTop.append(chBadge, miniRoutes);
+
+    const srcBtn = document.createElement('button');
+    srcBtn.type = 'button';
+    srcBtn.className = 'input-source-btn';
+    srcBtn.title = 'Klik untuk atur Audio Device / DSP Input';
+    srcBtn.textContent = describeChannelInput(ch);
+    srcBtn.addEventListener('click', () => {
+      app.state.selectedChannel = ch.index;
+      sendWs({ type: 'refresh_devices' });
+      populateDeviceSelects();
+      dom.audioDialog.showModal();
     });
-    panBlock.append(panSlider);
 
-    // Fader + Live Stereo Meter Well
-    const well = document.createElement('div');
-    well.className = 'fader-meter-well';
+    patch.append(patchTop, srcBtn);
 
+    // Gain Knob
+    const gainKnob = createRotaryKnob({
+      label: 'Gain',
+      value: ch.trimDb,
+      min: -20,
+      max: 24,
+      step: 0.5,
+      defaultVal: 0,
+      capClass: 'cap-dark',
+      formatVal: (v) => `${v > 0 ? '+' : ''}${v.toFixed(0)}`,
+      onChange: (v) => setChParam(ch.index, 'trimDb', v),
+    });
+
+    // Iconic Midas DM12 White EQ Strip
+    const eqBox = document.createElement('div');
+    eqBox.className = 'eq-white-panel';
+
+    const trebleKnob = createRotaryKnob({
+      label: 'Treb',
+      value: ch.eqHighDb,
+      min: -15,
+      max: 15,
+      step: 0.5,
+      defaultVal: 0,
+      capClass: 'cap-dark',
+      formatVal: (v) => `${v > 0 ? '+' : ''}${v.toFixed(0)}`,
+      onChange: (v) => setChParam(ch.index, 'eqHighDb', v),
+    });
+
+    const freqKnob = createRotaryKnob({
+      label: 'Freq',
+      value: ch.eqMidHz ?? 1200,
+      min: 150,
+      max: 3500,
+      step: 50,
+      defaultVal: 1200,
+      capClass: 'cap-cyan',
+      formatVal: (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.round(v)}`),
+      onChange: (v) => setChParam(ch.index, 'eqMidHz', v),
+    });
+
+    const midKnob = createRotaryKnob({
+      label: 'Mid',
+      value: ch.eqMidDb,
+      min: -15,
+      max: 15,
+      step: 0.5,
+      defaultVal: 0,
+      capClass: 'cap-cyan',
+      formatVal: (v) => `${v > 0 ? '+' : ''}${v.toFixed(0)}`,
+      onChange: (v) => setChParam(ch.index, 'eqMidDb', v),
+    });
+
+    const bassKnob = createRotaryKnob({
+      label: 'Bass',
+      value: ch.eqLowDb,
+      min: -15,
+      max: 15,
+      step: 0.5,
+      defaultVal: 0,
+      capClass: 'cap-dark',
+      formatVal: (v) => `${v > 0 ? '+' : ''}${v.toFixed(0)}`,
+      onChange: (v) => setChParam(ch.index, 'eqLowDb', v),
+    });
+
+    eqBox.append(trebleKnob, freqKnob, midKnob, bassKnob);
+
+    // Aux 1 (Reverb Send) & Aux 2 (Voice Comp Drive) — Emerald Green Caps
+    const aux1Knob = createRotaryKnob({
+      label: 'Aux1',
+      value: ch.reverbSend ?? 0,
+      min: 0,
+      max: 1,
+      step: 0.02,
+      defaultVal: 0,
+      capClass: 'cap-green',
+      formatVal: (v) => `${Math.round(v * 100)}`,
+      onChange: (v) => setChParam(ch.index, 'reverbSend', v),
+    });
+
+    const compDriveVal = ch.compOn ? Math.max(0.05, Math.min(1, ((ch.compRatio || 3) - 1.5) / 4.5)) : 0;
+    const aux2Knob = createRotaryKnob({
+      label: 'Aux2',
+      value: compDriveVal,
+      min: 0,
+      max: 1,
+      step: 0.05,
+      defaultVal: 0.35,
+      capClass: 'cap-green',
+      formatVal: (v) => (v <= 0.02 ? 'Off' : `C${Math.round(v * 10)}`),
+      onChange: (v) => {
+        if (v <= 0.02) {
+          setChParam(ch.index, 'compOn', false);
+        } else {
+          setChParam(ch.index, 'compOn', true);
+          setChParam(ch.index, 'compRatio', Number((1.5 + v * 4.5).toFixed(1)));
+          setChParam(ch.index, 'compThreshDb', Math.round(-10 - v * 20));
+        }
+      },
+    });
+
+    // Red Pan Knob
+    const panKnob = createRotaryKnob({
+      label: isStereo ? 'Bal' : 'Pan',
+      value: ch.pan ?? 0,
+      min: -1,
+      max: 1,
+      step: 0.05,
+      defaultVal: 0,
+      capClass: 'cap-red',
+      formatVal: (v) => (Math.abs(v) < 0.05 ? 'C' : v < 0 ? `L${Math.round(-v * 10)}` : `R${Math.round(v * 10)}`),
+      onChange: (v) => setChParam(ch.index, 'pan', v),
+    });
+
+    // PFL (White) + MUTE (Red) + PEAK LED
+    const swRow = document.createElement('div');
+    swRow.className = 'switch-row';
+
+    const pflBtn = document.createElement('button');
+    pflBtn.type = 'button';
+    pflBtn.className = 'dm-hw-btn pfl';
+    pflBtn.textContent = 'PFL';
+    pflBtn.setAttribute('aria-pressed', String(Boolean(ch.solo)));
+    pflBtn.addEventListener('click', () => {
+      setChParam(ch.index, 'solo', !ch.solo);
+      pflBtn.setAttribute('aria-pressed', String(ch.solo));
+    });
+
+    const muteBtn = document.createElement('button');
+    muteBtn.type = 'button';
+    muteBtn.className = 'dm-hw-btn mute';
+    muteBtn.textContent = 'MUTE';
+    muteBtn.setAttribute('aria-pressed', String(Boolean(ch.mute)));
+    muteBtn.addEventListener('click', () => {
+      setChParam(ch.index, 'mute', !ch.mute);
+      muteBtn.setAttribute('aria-pressed', String(ch.mute));
+    });
+
+    const peakWrap = document.createElement('div');
+    peakWrap.className = 'peak-led-wrap';
+    const peakLed = document.createElement('span');
+    peakLed.className = 'peak-led';
+    peakLed.dataset.chPeak = String(ch.index);
+    const peakLbl = document.createElement('span');
+    peakLbl.className = 'peak-lbl';
+    peakLbl.textContent = 'pk';
+    peakWrap.append(peakLed, peakLbl);
+
+    swRow.append(pflBtn, muteBtn, peakWrap);
+
+    // Hardware Fader Stage
+    const faderStage = document.createElement('div');
+    faderStage.className = 'fader-stage';
+
+    const meterSlim = document.createElement('div');
+    meterSlim.className = 'strip-meter-slim';
+    const meterFill = document.createElement('div');
+    meterFill.className = 'strip-meter-fill';
+    meterFill.dataset.chMeter = String(ch.index);
+    meterSlim.append(meterFill);
+
+    const trackWrap = document.createElement('div');
+    trackWrap.className = 'fader-track-wrap';
     const fader = document.createElement('input');
     fader.type = 'range';
-    fader.className = 'v-fader';
+    fader.className = `dm-fader${isStereo ? ' cap-green' : ''}`;
     fader.min = '0';
     fader.max = '100';
+    fader.step = '1';
     fader.value = String(faderToLinearSlider(ch.faderDb));
     fader.ariaLabel = `Fader ${ch.name}`;
     syncSlider(fader);
 
     const dbReadout = document.createElement('div');
-    dbReadout.className = 'db-readout';
-    dbReadout.textContent = formatDb(ch.faderDb);
+    dbReadout.className = 'fader-db-mini';
+    dbReadout.textContent = `${formatDb(ch.faderDb)} dB`;
 
     fader.addEventListener('input', () => {
       syncSlider(fader);
       const db = linearSliderToDb(fader.value);
-      dbReadout.textContent = formatDb(db);
+      dbReadout.textContent = `${formatDb(db)} dB`;
       setChParam(ch.index, 'faderDb', db);
     });
     addDoubleTapReset(fader, () => {
@@ -504,232 +669,454 @@ function renderConsole() {
       fader.dispatchEvent(new Event('input'));
     });
 
-    well.append(createDbScale(), fader, createLedMeterPair(`ch-${ch.index}`));
+    trackWrap.append(fader);
+    faderStage.append(createDmScale(), trackWrap, meterSlim);
 
-    // Footer (Readout + M/S + Scribble Strip)
-    const footer = document.createElement('div');
-    footer.className = 'strip-footer';
-
-    const rms = document.createElement('div');
-    rms.className = 'readout-ms';
-
-    const msBtns = document.createElement('div');
-    msBtns.className = 'ms-btns';
-
-    const muteBtn = document.createElement('button');
-    muteBtn.type = 'button';
-    muteBtn.className = 'ms-btn mute';
-    muteBtn.setAttribute('aria-pressed', String(Boolean(ch.mute)));
-    muteBtn.textContent = 'M';
-    muteBtn.addEventListener('click', () => {
-      setChParam(ch.index, 'mute', !ch.mute);
-      muteBtn.setAttribute('aria-pressed', String(ch.mute));
-    });
-
-    const soloBtn = document.createElement('button');
-    soloBtn.type = 'button';
-    soloBtn.className = 'ms-btn solo';
-    soloBtn.setAttribute('aria-pressed', String(Boolean(ch.solo)));
-    soloBtn.textContent = 'S';
-    soloBtn.addEventListener('click', () => {
-      setChParam(ch.index, 'solo', !ch.solo);
-      soloBtn.setAttribute('aria-pressed', String(ch.solo));
-    });
-
-    msBtns.append(muteBtn, soloBtn);
-    rms.append(dbReadout, msBtns);
-
-    const scribble = document.createElement('button');
-    scribble.type = 'button';
-    scribble.className = 'scribble-strip';
-    scribble.textContent = ch.name;
-    scribble.addEventListener('click', () => {
+    // Bottom White/Green Recessed Plate
+    const foot = document.createElement('div');
+    foot.className = 'strip-foot';
+    const plate = document.createElement('button');
+    plate.type = 'button';
+    plate.className = 'ch-plate-btn';
+    plate.textContent = ch.name;
+    plate.title = 'Klik untuk buka DSP & Rename Channel';
+    plate.addEventListener('click', () => {
       app.state.selectedChannel = ch.index;
-      sendWs({ type: 'select_channel', index: ch.index });
+      dom.fatPanel.hidden = false;
+      syncTopStatus();
       renderConsole();
       renderFatChannel();
     });
+    foot.append(dbReadout, plate);
 
-    footer.append(rms, scribble);
-    strip.append(roleBar, inputBlock, insBlock, sendBlock, panBlock, well, footer);
+    strip.append(patch, gainKnob, eqBox, aux1Knob, aux2Knob, panKnob, swRow, faderStage, foot);
     dom.consoleRack.append(strip);
   }
+}
+
+function buildLedColumn(id) {
+  const col = document.createElement('div');
+  col.className = 'led-col';
+  col.id = id;
+  for (let i = 0; i < LED_THRESHOLDS_DB.length; i++) {
+    const seg = document.createElement('span');
+    const tier = i >= 10 ? 'red' : i >= 8 ? 'yellow' : 'green';
+    seg.className = `led-seg ${tier}`;
+    col.append(seg);
+  }
+  return col;
 }
 
 function renderMasters() {
   if (!app.state) return;
   dom.masterRack.replaceChildren();
 
-  const specs = [
+  // 1. Audio Device Quick Patch Box (replaces upper master RCA/XLR jacks)
+  const patchBox = document.createElement('div');
+  patchBox.className = 'master-patch-box';
+
+  const patchHead = document.createElement('div');
+  patchHead.className = 'patch-box-head';
+  const phLeft = document.createElement('span');
+  phLeft.textContent = 'AUDIO I/O PATCH';
+  const phBtn = document.createElement('button');
+  phBtn.type = 'button';
+  phBtn.className = 'dm-btn small';
+  phBtn.textContent = 'Setup';
+  phBtn.addEventListener('click', () => dom.audioSetupBtn.click());
+  patchHead.append(phLeft, phBtn);
+
+  const devGrid = document.createElement('div');
+  devGrid.className = 'patch-device-grid';
+  const cfg = app.state.audioConfig || {};
+  const chips = [
+    ['MIC IN', resolveDeviceShortName(cfg.inputDevId, 'Default Mic')],
+    ['BGM / LOOP', resolveDeviceShortName(cfg.musicInputDevId, 'None')],
+    ['PHONES / MON', resolveDeviceShortName(cfg.monitorOutDevId, 'Default Out')],
+    ['STREAM OBS/TTLS', resolveDeviceShortName(cfg.streamOutDevId, 'None')],
+  ];
+  for (const [k, v] of chips) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'dev-chip';
+    chip.innerHTML = `<span class="dev-chip-k"></span><span class="dev-chip-v"></span>`;
+    chip.querySelector('.dev-chip-k').textContent = k;
+    chip.querySelector('.dev-chip-v').textContent = v;
+    chip.addEventListener('click', () => dom.audioSetupBtn.click());
+    devGrid.append(chip);
+  }
+  patchBox.append(patchHead, devGrid);
+
+  // 2. Aux Masters / FX + Master Segmented LED Meters
+  const midGrid = document.createElement('div');
+  midGrid.className = 'master-mid-grid';
+
+  const auxBox = document.createElement('div');
+  auxBox.className = 'master-box';
+  const auxTitle = document.createElement('div');
+  auxTitle.className = 'master-box-title';
+  auxTitle.textContent = 'AUX / FX / DUCK';
+
+  const knobsPair = document.createElement('div');
+  knobsPair.className = 'master-knobs-pair';
+  knobsPair.append(
+    createRotaryKnob({
+      label: 'FX Ret',
+      value: app.state.globals.fxReturnDb ?? -6,
+      min: -60,
+      max: 6,
+      step: 1,
+      defaultVal: -6,
+      capClass: 'cap-green',
+      formatVal: (v) => (v <= -59 ? '-∞' : `${v > 0 ? '+' : ''}${Math.round(v)}`),
+      onChange: (v) => setGlobalParam('fxReturnDb', v),
+    }),
+    createRotaryKnob({
+      label: 'Decay',
+      value: app.state.globals.reverbDecay ?? 0.75,
+      min: 0.2,
+      max: 0.95,
+      step: 0.05,
+      defaultVal: 0.75,
+      capClass: 'cap-cyan',
+      formatVal: (v) => `${Math.round(v * 100)}%`,
+      onChange: (v) => setGlobalParam('reverbDecay', v),
+    }),
+    createRotaryKnob({
+      label: 'Duck',
+      value: app.state.globals.autoDuckDepthDb ?? -10,
+      min: -24,
+      max: 0,
+      step: 1,
+      defaultVal: -10,
+      capClass: 'cap-dark',
+      formatVal: (v) => `${Math.round(v)}`,
+      onChange: (v) => setGlobalParam('autoDuckDepthDb', v),
+    }),
+  );
+
+  const fxBtnCol = document.createElement('div');
+  fxBtnCol.className = 'knob-cell';
+  fxBtnCol.style.justifyContent = 'center';
+  const fxMuteBtn = document.createElement('button');
+  fxMuteBtn.type = 'button';
+  fxMuteBtn.className = 'dm-hw-btn mute';
+  fxMuteBtn.style.width = '100%';
+  fxMuteBtn.textContent = 'FX MUTE';
+  fxMuteBtn.setAttribute('aria-pressed', String(Boolean(app.state.globals.fxReturnMute)));
+  fxMuteBtn.addEventListener('click', () => {
+    setGlobalParam('fxReturnMute', !app.state.globals.fxReturnMute);
+    fxMuteBtn.setAttribute('aria-pressed', String(app.state.globals.fxReturnMute));
+  });
+
+  const testBtn = document.createElement('button');
+  testBtn.type = 'button';
+  testBtn.className = 'dm-btn small';
+  testBtn.style.width = '100%';
+  testBtn.textContent = 'Test Tone';
+  testBtn.setAttribute('aria-pressed', String(Boolean(app.state.channels[0]?.testTone)));
+  testBtn.addEventListener('click', () => {
+    const ch0 = app.state.channels[0];
+    if (!ch0) return;
+    setChParam(0, 'testTone', !ch0.testTone);
+    testBtn.setAttribute('aria-pressed', String(ch0.testTone));
+  });
+
+  fxBtnCol.append(fxMuteBtn, testBtn);
+  knobsPair.append(fxBtnCol);
+  auxBox.append(auxTitle, knobsPair);
+
+  // Segmented Master Meters Box
+  const metersBox = document.createElement('div');
+  metersBox.className = 'master-meters-box';
+  const mTitle = document.createElement('div');
+  mTitle.className = 'master-box-title';
+  mTitle.textContent = 'MASTER METERS';
+
+  const modeTabs = document.createElement('div');
+  modeTabs.className = 'meter-mode-tabs';
+  for (const [key, lbl] of [['stream', 'STREAM'], ['monitor', 'PHONES']]) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'dm-btn small';
+    b.style.flex = '1';
+    b.textContent = lbl;
+    b.setAttribute('aria-pressed', String(app.meterBus === key));
+    b.addEventListener('click', () => {
+      app.meterBus = key;
+      renderMasters();
+    });
+    modeTabs.append(b);
+  }
+
+  const ledPair = document.createElement('div');
+  ledPair.className = 'led-meters-pair';
+  const scaleCol = document.createElement('div');
+  scaleCol.className = 'led-scale-col';
+  for (const lbl of ['+10', '+6', '0', '-6', '-12', '-22']) {
+    const s = document.createElement('span');
+    s.textContent = lbl;
+    scaleCol.append(s);
+  }
+  ledPair.append(buildLedColumn('master-led-l'), scaleCol, buildLedColumn('master-led-r'));
+  metersBox.append(mTitle, modeTabs, ledPair);
+
+  midGrid.append(auxBox, metersBox);
+
+  // 3. Dual Red Hardware Master Faders (Stream Out + Monitor Out)
+  const fadersRow = document.createElement('div');
+  fadersRow.className = 'master-faders-row';
+
+  const defs = [
     {
-      title: 'STREAM OUT',
-      sub: 'OBS / TTLS',
-      color: '#10b981',
+      label: 'STREAM (OBS)',
       dbKey: 'streamMasterDb',
       muteKey: 'streamMasterMute',
-      meterPrefix: 'stream',
+      meterKey: 'stream',
+      plateClass: 'master-plate',
     },
     {
-      title: 'MONITOR OUT',
-      sub: 'HEADPHONE',
-      color: '#2f9cf4',
+      label: 'PHONES (MON)',
       dbKey: 'monitorMasterDb',
       muteKey: 'monitorMasterMute',
-      meterPrefix: 'mon',
+      meterKey: 'monitor',
+      plateClass: 'master-plate mon',
     },
   ];
 
-  for (const m of specs) {
-    const strip = document.createElement('article');
-    strip.className = 's1-strip is-master';
-    strip.style.setProperty('--ch-color', m.color);
+  for (const d of defs) {
+    const col = document.createElement('div');
+    col.className = 'master-fader-col';
 
-    const roleBar = document.createElement('div');
-    roleBar.className = 'strip-top-role';
-    roleBar.innerHTML = `<span>${m.sub}</span><span>BUS</span>`;
+    const head = document.createElement('div');
+    head.className = 'master-fader-head';
+    const valSpan = document.createElement('span');
+    valSpan.textContent = `${formatDb(app.state.globals[d.dbKey])} dB`;
+    const mBtn = document.createElement('button');
+    mBtn.type = 'button';
+    mBtn.className = 'dm-hw-btn mute';
+    mBtn.style.maxWidth = '46px';
+    mBtn.style.height = '17px';
+    mBtn.textContent = 'MUTE';
+    mBtn.setAttribute('aria-pressed', String(Boolean(app.state.globals[d.muteKey])));
+    mBtn.addEventListener('click', () => {
+      setGlobalParam(d.muteKey, !app.state.globals[d.muteKey]);
+      mBtn.setAttribute('aria-pressed', String(app.state.globals[d.muteKey]));
+    });
+    head.append(valSpan, mBtn);
 
-    const well = document.createElement('div');
-    well.className = 'fader-meter-well';
+    const stage = document.createElement('div');
+    stage.className = 'fader-stage';
+    const mSlim = document.createElement('div');
+    mSlim.className = 'strip-meter-slim';
+    const mFill = document.createElement('div');
+    mFill.className = 'strip-meter-fill';
+    mFill.dataset.masterMeter = d.meterKey;
+    mSlim.append(mFill);
 
+    const wrap = document.createElement('div');
+    wrap.className = 'fader-track-wrap';
     const fader = document.createElement('input');
     fader.type = 'range';
-    fader.className = 'v-fader';
+    fader.className = 'dm-fader cap-red';
     fader.min = '0';
     fader.max = '100';
-    fader.value = String(faderToLinearSlider(app.state.globals[m.dbKey]));
-    fader.ariaLabel = m.title;
+    fader.step = '1';
+    fader.value = String(faderToLinearSlider(app.state.globals[d.dbKey]));
+    fader.ariaLabel = d.label;
     syncSlider(fader);
-
-    const dbReadout = document.createElement('div');
-    dbReadout.className = 'db-readout';
-    dbReadout.textContent = formatDb(app.state.globals[m.dbKey]);
 
     fader.addEventListener('input', () => {
       syncSlider(fader);
       const db = linearSliderToDb(fader.value);
-      dbReadout.textContent = formatDb(db);
-      setGlobalParam(m.dbKey, db);
+      valSpan.textContent = `${formatDb(db)} dB`;
+      setGlobalParam(d.dbKey, db);
     });
     addDoubleTapReset(fader, () => {
       fader.value = String(faderToLinearSlider(0));
       fader.dispatchEvent(new Event('input'));
     });
 
-    well.append(createDbScale(), fader, createLedMeterPair(m.meterPrefix));
+    wrap.append(fader);
+    stage.append(createDmScale(), wrap, mSlim);
 
-    const footer = document.createElement('div');
-    footer.className = 'strip-footer';
+    const plate = document.createElement('div');
+    plate.className = d.plateClass;
+    plate.textContent = d.label;
 
-    const rms = document.createElement('div');
-    rms.className = 'readout-ms';
-
-    const muteBtn = document.createElement('button');
-    muteBtn.type = 'button';
-    muteBtn.className = 'ms-btn mute';
-    muteBtn.setAttribute('aria-pressed', String(Boolean(app.state.globals[m.muteKey])));
-    muteBtn.textContent = 'M';
-    muteBtn.addEventListener('click', () => {
-      const next = !app.state.globals[m.muteKey];
-      setGlobalParam(m.muteKey, next);
-      muteBtn.setAttribute('aria-pressed', String(next));
-    });
-
-    rms.append(dbReadout, muteBtn);
-
-    const scribble = document.createElement('div');
-    scribble.className = 'scribble-strip';
-    scribble.textContent = m.title;
-
-    footer.append(rms, scribble);
-    strip.append(roleBar, well, footer);
-    dom.masterRack.append(strip);
+    col.append(head, stage, plate);
+    fadersRow.append(col);
   }
-}
 
-function createFatSlider(label, min, max, step, value, fmt, onChange) {
-  const row = document.createElement('div');
-  row.className = 'param-row';
-
-  const top = document.createElement('div');
-  top.className = 'param-lbl-row';
-  const lbl = document.createElement('span');
-  lbl.textContent = label;
-  const val = document.createElement('strong');
-  val.textContent = fmt(value);
-  top.append(lbl, val);
-
-  const slider = document.createElement('input');
-  slider.type = 'range';
-  slider.className = 'h-mini';
-  slider.min = String(min);
-  slider.max = String(max);
-  slider.step = String(step);
-  slider.value = String(value);
-  syncSlider(slider);
-
-  slider.addEventListener('input', () => {
-    syncSlider(slider);
-    const num = Number(slider.value);
-    val.textContent = fmt(num);
-    onChange(num);
-  });
-
-  row.append(top, slider);
-  return row;
+  dom.masterRack.append(patchBox, midGrid, fadersRow);
 }
 
 function renderFatChannel() {
   if (!app.state) return;
   const ch = app.state.channels[app.state.selectedChannel] || app.state.channels[0];
-  dom.fatChannelName.textContent = `${ch.name} (${ch.role})`;
+  dom.fatChannelName.textContent = `CH ${ch.index + 1} — ${ch.name}`;
   dom.fatBody.replaceChildren();
 
-  // HPF & Gate
-  const gateCard = document.createElement('div');
-  gateCard.className = 'fat-card';
-  gateCard.innerHTML = `<div class="fat-card-head"><span>HPF &amp; Noise Gate</span></div>`;
-  gateCard.append(
-    createFatSlider('HPF Cut', 20, 300, 1, ch.hpfHz, (v) => `${v} Hz`, (v) => setChParam(ch.index, 'hpfHz', v)),
-    createFatSlider('Gate Threshold', -80, -10, 1, ch.gateThreshDb, (v) => `${v} dB`, (v) => setChParam(ch.index, 'gateThreshDb', v)),
+  const makeCard = (title, toggleKey, buildBody) => {
+    const card = document.createElement('div');
+    card.className = 'dsp-card';
+    const head = document.createElement('div');
+    head.className = 'dsp-card-head';
+    const t = document.createElement('span');
+    t.textContent = title;
+    head.append(t);
+
+    if (toggleKey) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'dm-btn small';
+      btn.textContent = ch[toggleKey] ? 'ON' : 'OFF';
+      btn.setAttribute('aria-pressed', String(Boolean(ch[toggleKey])));
+      btn.addEventListener('click', () => {
+        setChParam(ch.index, toggleKey, !ch[toggleKey]);
+        renderConsole();
+        renderFatChannel();
+      });
+      head.append(btn);
+    }
+    card.append(head);
+    buildBody(card);
+    return card;
+  };
+
+  const addSlider = (card, label, key, min, max, step, suffix = '') => {
+    const row = document.createElement('div');
+    row.className = 'dsp-slider-row';
+    const top = document.createElement('div');
+    top.className = 'dsp-slider-top';
+    const lbl = document.createElement('span');
+    lbl.textContent = label;
+    const valEl = document.createElement('span');
+    valEl.textContent = `${ch[key]}${suffix}`;
+    top.append(lbl, valEl);
+
+    const sl = document.createElement('input');
+    sl.type = 'range';
+    sl.min = String(min);
+    sl.max = String(max);
+    sl.step = String(step);
+    sl.value = String(ch[key]);
+    sl.addEventListener('input', () => {
+      const v = Number(sl.value);
+      valEl.textContent = `${v}${suffix}`;
+      setChParam(ch.index, key, v);
+      renderConsole();
+    });
+    row.append(top, sl);
+    card.append(row);
+  };
+
+  // Source & Channel Name
+  dom.fatBody.append(
+    makeCard('Input Source & Label', null, (card) => {
+      const nameRow = document.createElement('div');
+      nameRow.className = 'form-row';
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.value = ch.name;
+      inp.maxLength = 18;
+      inp.style.cssText = 'background:#090d20;color:#fff;border:1px solid #35417a;border-radius:4px;padding:4px 6px;font-size:0.76rem;';
+      inp.addEventListener('change', () => {
+        sendWs({ type: 'rename_channel', index: ch.index, name: inp.value });
+      });
+      nameRow.append(inp);
+
+      const srcRow = document.createElement('div');
+      srcRow.className = 'form-row';
+      const srcSel = document.createElement('select');
+      for (const [val, txt] of [
+        ['0', 'Mic Hardware (Audio Setup)'],
+        ['1', 'BGM Deck + Loopback'],
+        ['2', 'Loopback / Aux Device'],
+        ['3', 'Soundboard Pads'],
+      ]) {
+        const o = document.createElement('option');
+        o.value = val;
+        o.textContent = txt;
+        srcSel.append(o);
+      }
+      srcSel.value = String(ch.sourceMode ?? 0);
+      srcSel.addEventListener('change', () => {
+        setChParam(ch.index, 'sourceMode', Number(srcSel.value));
+        renderConsole();
+      });
+      srcRow.append(srcSel);
+
+      const chOffSel = document.createElement('select');
+      for (let i = 0; i < 4; i++) {
+        const o = document.createElement('option');
+        o.value = String(i);
+        o.textContent = `Hardware Input Ch ${i + 1}${i < 3 ? `–${i + 2}` : ''}`;
+        chOffSel.append(o);
+      }
+      chOffSel.value = String(ch.inputChannelOffset ?? 0);
+      chOffSel.addEventListener('change', () => {
+        setChParam(ch.index, 'inputChannelOffset', Number(chOffSel.value));
+        renderConsole();
+      });
+
+      card.append(nameRow, srcRow, chOffSel);
+    }),
   );
 
-  // 3-Band Pro EQ
-  const eqCard = document.createElement('div');
-  eqCard.className = 'fat-card';
-  eqCard.innerHTML = `<div class="fat-card-head"><span>3-Band Pro EQ</span></div>`;
-  eqCard.append(
-    createFatSlider('Low (120 Hz)', -12, 12, 0.5, ch.eqLowDb, (v) => `${v > 0 ? '+' : ''}${v} dB`, (v) => setChParam(ch.index, 'eqLowDb', v)),
-    createFatSlider('Mid (1.2 kHz)', -12, 12, 0.5, ch.eqMidDb, (v) => `${v > 0 ? '+' : ''}${v} dB`, (v) => setChParam(ch.index, 'eqMidDb', v)),
-    createFatSlider('High (6.5 kHz)', -12, 12, 0.5, ch.eqHighDb, (v) => `${v > 0 ? '+' : ''}${v} dB`, (v) => setChParam(ch.index, 'eqHighDb', v)),
+  // HPF & Noise Gate
+  dom.fatBody.append(
+    makeCard('High-Pass & Noise Gate', 'gateOn', (card) => {
+      const hpfRow = document.createElement('div');
+      hpfRow.style.display = 'flex';
+      hpfRow.style.justifyContent = 'space-between';
+      hpfRow.style.alignItems = 'center';
+      const hpfBtn = document.createElement('button');
+      hpfBtn.type = 'button';
+      hpfBtn.className = 'dm-btn small';
+      hpfBtn.textContent = `HPF: ${ch.hpfOn ? 'ON' : 'OFF'}`;
+      hpfBtn.setAttribute('aria-pressed', String(Boolean(ch.hpfOn)));
+      hpfBtn.addEventListener('click', () => {
+        setChParam(ch.index, 'hpfOn', !ch.hpfOn);
+        renderFatChannel();
+      });
+      const phiBtn = document.createElement('button');
+      phiBtn.type = 'button';
+      phiBtn.className = 'dm-btn small';
+      phiBtn.textContent = `Phase Ø: ${ch.phaseInvert ? 'INV' : 'NRM'}`;
+      phiBtn.setAttribute('aria-pressed', String(Boolean(ch.phaseInvert)));
+      phiBtn.addEventListener('click', () => {
+        setChParam(ch.index, 'phaseInvert', !ch.phaseInvert);
+        renderFatChannel();
+      });
+      hpfRow.append(hpfBtn, phiBtn);
+      card.append(hpfRow);
+      addSlider(card, 'HPF Cutoff', 'hpfHz', 30, 220, 5, ' Hz');
+      addSlider(card, 'Gate Threshold', 'gateThreshDb', -65, -20, 1, ' dB');
+    }),
   );
 
   // Compressor
-  const compCard = document.createElement('div');
-  compCard.className = 'fat-card';
-  compCard.innerHTML = `<div class="fat-card-head"><span>Vocal Compressor</span><span id="fat-comp-gr" class="badge-val">GR: 0.0 dB</span></div>`;
-  compCard.append(
-    createFatSlider('Threshold', -45, 0, 1, ch.compThreshDb, (v) => `${v} dB`, (v) => setChParam(ch.index, 'compThreshDb', v)),
-    createFatSlider('Ratio', 1, 10, 0.2, ch.compRatio, (v) => `${Number(v).toFixed(1)}:1`, (v) => setChParam(ch.index, 'compRatio', v)),
-    createFatSlider('Makeup Gain', 0, 12, 0.5, ch.compMakeupDb, (v) => `+${v} dB`, (v) => setChParam(ch.index, 'compMakeupDb', v)),
+  dom.fatBody.append(
+    makeCard('Dynamics Compressor', 'compOn', (card) => {
+      const gr = document.createElement('div');
+      gr.id = 'fat-comp-gr';
+      gr.style.fontSize = '0.68rem';
+      gr.style.color = '#facc15';
+      gr.textContent = 'GR: 0.0 dB';
+      card.append(gr);
+      addSlider(card, 'Threshold', 'compThreshDb', -40, 0, 1, ' dB');
+      addSlider(card, 'Ratio', 'compRatio', 1.2, 8, 0.2, ':1');
+      addSlider(card, 'Makeup Gain', 'compMakeupDb', 0, 12, 0.5, ' dB');
+    }),
   );
-
-  // Stream Auto-Ducking & Reverb
-  const streamCard = document.createElement('div');
-  streamCard.className = 'fat-card';
-  streamCard.innerHTML = `<div class="fat-card-head"><span>Auto-Ducking &amp; Reverb</span></div>`;
-  streamCard.append(
-    createFatSlider('Ducking Depth', -24, -2, 1, app.state.globals.autoDuckDepthDb, (v) => `${v} dB`, (v) => setGlobalParam('autoDuckDepthDb', v)),
-    createFatSlider('Reverb Decay', 0.2, 0.88, 0.02, app.state.globals.reverbDecay, (v) => `${Math.round(v * 100)}%`, (v) => setGlobalParam('reverbDecay', v)),
-  );
-
-  dom.fatBody.append(gateCard, eqCard, compCard, streamCard);
 }
 
 function flashPad(idx) {
-  const btn = document.querySelector(`[data-pad-idx="${idx}"]`);
+  const btn = dom.padsRow.querySelector(`[data-pad-idx="${idx}"]`);
   if (!btn) return;
   btn.classList.add('is-hit');
-  setTimeout(() => btn.classList.remove('is-hit'), 160);
+  setTimeout(() => btn.classList.remove('is-hit'), 180);
 }
 
 function renderPads() {
@@ -737,8 +1124,8 @@ function renderPads() {
   dom.padsRow.replaceChildren();
   for (const pad of app.state.pads) {
     const cell = document.createElement('div');
-    cell.className = 's1-pad';
-    cell.style.setProperty('--pad-color', pad.color);
+    cell.className = 'pad-cell';
+    cell.style.setProperty('--pad-color', pad.color || '#38bdf8');
 
     const hitBtn = document.createElement('button');
     hitBtn.type = 'button';
@@ -754,7 +1141,8 @@ function renderPads() {
     const loadBtn = document.createElement('button');
     loadBtn.type = 'button';
     loadBtn.className = 'pad-load-btn';
-    loadBtn.textContent = pad.wavPath ? 'Ganti .WAV' : 'Load .WAV';
+    loadBtn.textContent = pad.wavPath ? 'Edit' : '+';
+    loadBtn.title = 'Load audio file untuk pad ini';
     loadBtn.addEventListener('click', () => {
       app.uploadPadIdx = pad.index;
       dom.wavUploadInput.click();
@@ -819,36 +1207,11 @@ function renderAll() {
   renderSceneBar();
   renderConsole();
   renderMasters();
-  renderFatChannel();
+  if (!dom.fatPanel.hidden) renderFatChannel();
   renderPads();
   populateDeviceSelects();
   renderLanList();
 }
-
-// Event Bindings
-dom.autoDuckBtn.addEventListener('click', () => {
-  if (!app.state) return;
-  const next = !app.state.globals.autoDuckEnabled;
-  setGlobalParam('autoDuckEnabled', next);
-  syncTopStatus();
-});
-
-dom.toggleFatBtn.addEventListener('click', () => {
-  dom.fatPanel.hidden = !dom.fatPanel.hidden;
-  syncTopStatus();
-});
-
-dom.fatCloseBtn.addEventListener('click', () => {
-  dom.fatPanel.hidden = true;
-  syncTopStatus();
-});
-
-dom.togglePadsBtn.addEventListener('click', () => {
-  dom.soundboardDock.hidden = !dom.soundboardDock.hidden;
-  syncTopStatus();
-});
-
-dom.stopPadsBtn.addEventListener('click', () => sendWs({ type: 'pad_stop_all' }));
 
 async function decodeAudioFileToWavBuffer(file, targetRate = 48000) {
   const raw = await file.arrayBuffer();
@@ -898,6 +1261,32 @@ async function decodeAudioFileToWavBuffer(file, targetRate = 48000) {
     await ctx.close();
   }
 }
+
+// Event Bindings
+dom.autoDuckBtn.addEventListener('click', () => {
+  if (!app.state) return;
+  const next = !app.state.globals.autoDuckEnabled;
+  setGlobalParam('autoDuckEnabled', next);
+  syncTopStatus();
+});
+
+dom.toggleFatBtn.addEventListener('click', () => {
+  dom.fatPanel.hidden = !dom.fatPanel.hidden;
+  if (!dom.fatPanel.hidden) renderFatChannel();
+  syncTopStatus();
+});
+
+dom.fatCloseBtn.addEventListener('click', () => {
+  dom.fatPanel.hidden = true;
+  syncTopStatus();
+});
+
+dom.togglePadsBtn.addEventListener('click', () => {
+  dom.soundboardDock.hidden = !dom.soundboardDock.hidden;
+  syncTopStatus();
+});
+
+dom.stopPadsBtn.addEventListener('click', () => sendWs({ type: 'pad_stop_all' }));
 
 dom.wavUploadInput.addEventListener('change', async () => {
   const file = dom.wavUploadInput.files?.[0];

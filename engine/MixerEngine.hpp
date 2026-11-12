@@ -21,6 +21,7 @@ struct ChannelAtomicParams {
 
   std::atomic<bool> eqOn{true};
   std::atomic<float> eqLowDb{0.0f};
+  std::atomic<float> eqMidHz{1200.0f};
   std::atomic<float> eqMidDb{0.0f};
   std::atomic<float> eqHighDb{0.0f};
 
@@ -53,6 +54,7 @@ struct ChannelDsp {
 
   float lastHpfHz = -1.0f;
   float lastLow = -999.0f;
+  float lastMidHz = -1.0f;
   float lastMid = -999.0f;
   float lastHigh = -999.0f;
   float tonePhase = 0.0f;
@@ -64,7 +66,7 @@ struct ChannelDsp {
 
 class MixerEngine {
 public:
-  static constexpr int kChannels = 6; // 0:Mic, 1:Music, 2:Game/TTLS, 3:Guest, 4:Pads, 5:FX
+  static constexpr int kChannels = 8; // 0..2:Mic/Line, 3..5:Guest/Game/App, 6:Music/BGM, 7:Soundboard
 
   std::array<ChannelAtomicParams, kChannels> chParams;
   std::array<ChannelDsp, kChannels> chDsp;
@@ -72,6 +74,8 @@ public:
   std::atomic<bool> autoDuckEnabled{true};
   std::atomic<float> autoDuckDepthDb{-10.0f};
   std::atomic<float> reverbDecay{0.75f};
+  std::atomic<float> fxReturnDb{-6.0f};
+  std::atomic<bool> fxReturnMute{false};
 
   std::atomic<float> streamMasterDb{0.0f};
   std::atomic<bool> streamMasterMute{false};
@@ -82,31 +86,50 @@ public:
   std::atomic<float> streamPeakR{0.0f};
   std::atomic<float> monitorPeakL{0.0f};
   std::atomic<float> monitorPeakR{0.0f};
+  std::atomic<float> fxPeakL{0.0f};
+  std::atomic<float> fxPeakR{0.0f};
   std::atomic<float> duckGainDb{0.0f};
 
   Soundboard soundboard;
   BgmPlayer bgm;
 
   MixerEngine() {
-    // Channel defaults tailored for Live Streaming / OBS / TTLS
-    chParams[0].duckRole.store(1);      // Mic triggers ducking
-    chParams[0].sourceMode.store(0);    // Hardware Mic input
+    // 8-channel Midas DM12-inspired streaming defaults
+    chParams[0].duckRole.store(1);      // Ch 1: Host Mic triggers ducking
+    chParams[0].sourceMode.store(0);    // Hardware Mic ch 1
+    chParams[0].inputChannelOffset.store(0);
     chParams[0].gateOn.store(true);
     chParams[0].compOn.store(true);
     chParams[0].hpfOn.store(true);
     chParams[0].hpfHz.store(85.0f);
 
-    chParams[1].duckRole.store(2);      // Music gets ducked when Mic talks
-    chParams[1].sourceMode.store(1);    // Built-in BGM Deck + Loopback input
-    chParams[1].hpfOn.store(false);
-    chParams[2].sourceMode.store(2);    // Loopback / Aux capture
-    chParams[2].hpfOn.store(false);     // Game / Browser
-    chParams[3].sourceMode.store(2);    // Loopback / Aux capture
-    chParams[3].hpfOn.store(true);      // Guest / Discord
-    chParams[4].sourceMode.store(3);    // Soundboard Pads
+    chParams[1].duckRole.store(1);      // Ch 2: Co-Host Mic / Hardware ch 2
+    chParams[1].sourceMode.store(0);
+    chParams[1].inputChannelOffset.store(1);
+    chParams[1].mute.store(true);
+    chParams[1].hpfOn.store(true);
+    chParams[1].hpfHz.store(85.0f);
+
+    chParams[2].sourceMode.store(0);    // Ch 3: Line / Instrument
+    chParams[2].inputChannelOffset.store(0);
+    chParams[2].mute.store(true);
+    chParams[2].hpfOn.store(false);
+
+    chParams[3].sourceMode.store(2);    // Ch 4: Guest / Call (Loopback)
+    chParams[3].hpfOn.store(true);
+
+    chParams[4].sourceMode.store(2);    // Ch 5: Game / TTLS (Loopback)
     chParams[4].hpfOn.store(false);
-    chParams[5].sourceMode.store(4);    // FX Return
-    chParams[5].hpfOn.store(true);
+
+    chParams[5].sourceMode.store(2);    // Ch 6: Browser / App (Loopback)
+    chParams[5].hpfOn.store(false);
+
+    chParams[6].duckRole.store(2);      // Ch 7: Music / BGM (Ducked when Mic talks)
+    chParams[6].sourceMode.store(1);    // Built-in BGM Deck + Loopback
+    chParams[6].hpfOn.store(false);
+
+    chParams[7].sourceMode.store(3);    // Ch 8: Soundboard Pads
+    chParams[7].hpfOn.store(false);
   }
 
   void setSampleRate(float sr) {
@@ -172,18 +195,20 @@ public:
       }
 
       float lowDb = p.eqLowDb.load(std::memory_order_relaxed);
+      float midHz = std::clamp(p.eqMidHz.load(std::memory_order_relaxed), 150.0f, 3500.0f);
       float midDb = p.eqMidDb.load(std::memory_order_relaxed);
       float highDb = p.eqHighDb.load(std::memory_order_relaxed);
       if (std::abs(lowDb - d.lastLow) > 0.05f) {
-        d.eqLow.setLowShelf(sampleRate_, 120.0f, lowDb);
+        d.eqLow.setLowShelf(sampleRate_, 80.0f, lowDb);
         d.lastLow = lowDb;
       }
-      if (std::abs(midDb - d.lastMid) > 0.05f) {
-        d.eqMid.setPeaking(sampleRate_, 1200.0f, midDb, 1.0f);
+      if (std::abs(midDb - d.lastMid) > 0.05f || std::abs(midHz - d.lastMidHz) > 1.0f) {
+        d.eqMid.setPeaking(sampleRate_, midHz, midDb, 1.0f);
         d.lastMid = midDb;
+        d.lastMidHz = midHz;
       }
       if (std::abs(highDb - d.lastHigh) > 0.05f) {
-        d.eqHigh.setHighShelf(sampleRate_, 6500.0f, highDb);
+        d.eqHigh.setHighShelf(sampleRate_, 12000.0f, highDb);
         d.lastHigh = highDb;
       }
 
@@ -218,14 +243,11 @@ public:
       float maxR = 0.0f;
       float toneFreq = 220.0f + c * 55.0f;
 
-      // Skip channel 5 (FX Return) here; it mixes reverb after channel loop
-      if (c == 5) continue;
-
       for (size_t i = 0; i < frames; ++i) {
         float l = 0.0f;
         float r = 0.0f;
 
-        if (srcMode == 3 || c == 4) {
+        if (srcMode == 3) {
           l = padScratchL_[i];
           r = padScratchR_[i];
         } else if (srcMode == 1) {
@@ -249,11 +271,13 @@ public:
             l = hwInInterleaved[i * hwInChannels + chL];
             r = hwInInterleaved[i * hwInChannels + chR];
           }
-        } else if (hwInInterleaved && hwInChannels > 0) {
-          int chL = std::min(inOffset, hwInChannels - 1);
-          int chR = (inOffset + 1 < hwInChannels) ? (inOffset + 1) : chL;
-          l = hwInInterleaved[i * hwInChannels + chL];
-          r = hwInInterleaved[i * hwInChannels + chR];
+        } else if (srcMode == 0 && hwInInterleaved && hwInChannels > 0) {
+          if (inOffset < hwInChannels) {
+            int chL = inOffset;
+            int chR = (inOffset + 1 < hwInChannels) ? (inOffset + 1) : chL;
+            l = hwInInterleaved[i * hwInChannels + chL];
+            r = hwInInterleaved[i * hwInChannels + chR];
+          }
         }
 
         if (tone) {
@@ -324,18 +348,12 @@ public:
       d.compGrDb.store(d.comp.gainReductionDb, std::memory_order_relaxed);
     }
 
-    // Channel 5: Reverb FX Return
+    // Global Aux 1 Stereo Reverb Return (Master Aux Return)
     {
-      auto& fp = chParams[5];
-      auto& fd = chDsp[5];
-      float faderLin = dbToLinear(fp.faderDb.load(std::memory_order_relaxed));
-      bool muted = fp.mute.load(std::memory_order_relaxed);
-      bool soloed = fp.solo.load(std::memory_order_relaxed);
-      bool audible = !muted && (!anySolo || soloed);
-      bool toStream = audible && fp.routeStream.load(std::memory_order_relaxed);
-      bool toMon = audible && fp.routeMonitor.load(std::memory_order_relaxed);
+      float faderLin = fxReturnMute.load(std::memory_order_relaxed)
+                           ? 0.0f
+                           : dbToLinear(fxReturnDb.load(std::memory_order_relaxed));
       float decay = reverbDecay.load(std::memory_order_relaxed);
-
       float maxL = 0.0f;
       float maxR = 0.0f;
       for (size_t i = 0; i < frames; ++i) {
@@ -345,17 +363,13 @@ public:
         rr *= faderLin;
         maxL = std::max(maxL, std::abs(rl));
         maxR = std::max(maxR, std::abs(rr));
-        if (toStream) {
-          outStreamL[i] += rl;
-          outStreamR[i] += rr;
-        }
-        if (toMon) {
-          outMonL[i] += rl;
-          outMonR[i] += rr;
-        }
+        outStreamL[i] += rl;
+        outStreamR[i] += rr;
+        outMonL[i] += rl;
+        outMonR[i] += rr;
       }
-      fd.peakL.store(std::max(maxL, fd.peakL.load(std::memory_order_relaxed) * 0.85f), std::memory_order_relaxed);
-      fd.peakR.store(std::max(maxR, fd.peakR.load(std::memory_order_relaxed) * 0.85f), std::memory_order_relaxed);
+      fxPeakL.store(std::max(maxL, fxPeakL.load(std::memory_order_relaxed) * 0.85f), std::memory_order_relaxed);
+      fxPeakR.store(std::max(maxR, fxPeakR.load(std::memory_order_relaxed) * 0.85f), std::memory_order_relaxed);
     }
 
     // Master Buses with Soft Safety Limiter (prevents OBS/TTLS clipping)

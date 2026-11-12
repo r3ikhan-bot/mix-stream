@@ -256,7 +256,7 @@ class AudioEngineProcess {
   syncAll(state) {
     const chKeys = [
       'trimDb', 'phaseInvert', 'hpfOn', 'hpfHz', 'gateOn', 'gateThreshDb',
-      'eqOn', 'eqLowDb', 'eqMidDb', 'eqHighDb', 'compOn', 'compThreshDb',
+      'eqOn', 'eqLowDb', 'eqMidHz', 'eqMidDb', 'eqHighDb', 'compOn', 'compThreshDb',
       'compRatio', 'compMakeupDb', 'reverbSend', 'pan', 'faderDb', 'mute',
       'solo', 'routeStream', 'routeMonitor', 'duckRole', 'testTone', 'inputChannelOffset', 'sourceMode',
     ];
@@ -311,7 +311,9 @@ function loadState() {
   try {
     if (!fs.existsSync(STATE_FILE)) return defaults;
     const saved = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-    if (!saved || !Array.isArray(saved.channels)) return defaults;
+    if (!saved || !Array.isArray(saved.channels) || saved.channels.length !== defaults.channels.length) {
+      return defaults;
+    }
     return {
       ...defaults,
       ...saved,

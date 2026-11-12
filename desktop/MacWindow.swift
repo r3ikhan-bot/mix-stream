@@ -25,8 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "StudioStream Mixer — OBS & TikTok Live Studio Console"
-        window.backgroundColor = NSColor(calibratedRed: 0.098, green: 0.110, blue: 0.133, alpha: 1.0)
+        window.title = "MIDAS DM8 Stream Console — OBS & TikTok Live Studio"
+        window.backgroundColor = NSColor(calibratedRed: 0.055, green: 0.067, blue: 0.141, alpha: 1.0)
         window.minSize = NSSize(width: 820, height: 520)
         window.delegate = self
 

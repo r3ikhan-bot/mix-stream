@@ -158,6 +158,7 @@ int main() {
       else if (key == "gateThreshDb") p.gateThreshDb.store(val, std::memory_order_relaxed);
       else if (key == "eqOn") p.eqOn.store(bval, std::memory_order_relaxed);
       else if (key == "eqLowDb") p.eqLowDb.store(val, std::memory_order_relaxed);
+      else if (key == "eqMidHz") p.eqMidHz.store(val, std::memory_order_relaxed);
       else if (key == "eqMidDb") p.eqMidDb.store(val, std::memory_order_relaxed);
       else if (key == "eqHighDb") p.eqHighDb.store(val, std::memory_order_relaxed);
       else if (key == "compOn") p.compOn.store(bval, std::memory_order_relaxed);
@@ -182,6 +183,8 @@ int main() {
       if (key == "autoDuckEnabled") engine.autoDuckEnabled.store(bval, std::memory_order_relaxed);
       else if (key == "autoDuckDepthDb") engine.autoDuckDepthDb.store(val, std::memory_order_relaxed);
       else if (key == "reverbDecay") engine.reverbDecay.store(val, std::memory_order_relaxed);
+      else if (key == "fxReturnDb") engine.fxReturnDb.store(val, std::memory_order_relaxed);
+      else if (key == "fxReturnMute") engine.fxReturnMute.store(bval, std::memory_order_relaxed);
       else if (key == "streamMasterDb") engine.streamMasterDb.store(val, std::memory_order_relaxed);
       else if (key == "streamMasterMute") engine.streamMasterMute.store(bval, std::memory_order_relaxed);
       else if (key == "monitorMasterDb") engine.monitorMasterDb.store(val, std::memory_order_relaxed);
