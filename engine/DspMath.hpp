@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <vector>
 
 namespace ssm {
 
@@ -204,6 +205,148 @@ struct SimpleStereoReverb {
 
     outL = sumL * 0.22f;
     outR = sumR * 0.22f;
+  }
+};
+
+struct DeEsser {
+  Biquad sidechainHp;
+  float lastFreqHz = -1.0f;
+  float env = 0.0f;
+  float gain = 1.0f;
+
+  inline void process(float& l, float& r, float freqParam, float amountParam, float sampleRate) {
+    float freqHz = 4500.0f + std::clamp(freqParam, 0.0f, 1.0f) * 4500.0f;
+    if (std::abs(freqHz - lastFreqHz) > 25.0f) {
+      sidechainHp.setHighPass(sampleRate, freqHz, 1.2f);
+      lastFreqHz = freqHz;
+    }
+
+    float scL = l;
+    float scR = r;
+    sidechainHp.processStereo(scL, scR);
+    float sibilance = std::max(std::abs(scL), std::abs(scR));
+
+    float atk = std::exp(-1.0f / (0.0015f * sampleRate));
+    float rel = std::exp(-1.0f / (0.045f * sampleRate));
+    env = (sibilance > env) ? (atk * env + (1.0f - atk) * sibilance)
+                            : (rel * env + (1.0f - rel) * sibilance);
+
+    float thresh = 0.035f;
+    float amount = std::clamp(amountParam, 0.0f, 1.0f);
+    float targetGain = 1.0f;
+    if (env > thresh && amount > 0.01f) {
+      float excess = (env - thresh) / (env + 1e-5f);
+      targetGain = std::max(0.25f, 1.0f - excess * amount * 0.85f);
+    }
+    gain = 0.96f * gain + 0.04f * targetGain;
+    l *= gain;
+    r *= gain;
+  }
+};
+
+struct VocalWarmth {
+  Biquad presenceShelf;
+  float lastTone = -1.0f;
+
+  inline void process(float& l, float& r, float driveParam, float toneParam, float sampleRate) {
+    float drive = 1.0f + std::clamp(driveParam, 0.0f, 1.0f) * 2.5f;
+    float bias = 0.06f * std::clamp(driveParam, 0.0f, 1.0f);
+    float norm = 1.0f / std::tanh(drive);
+    float offset = std::tanh(bias * drive);
+
+    l = (std::tanh((l + bias) * drive) - offset) * norm;
+    r = (std::tanh((r + bias) * drive) - offset) * norm;
+
+    float toneDb = (std::clamp(toneParam, 0.0f, 1.0f) - 0.35f) * 8.0f;
+    if (std::abs(toneDb - lastTone) > 0.1f) {
+      presenceShelf.setHighShelf(sampleRate, 3800.0f, toneDb, 0.75f);
+      lastTone = toneDb;
+    }
+    presenceShelf.processStereo(l, r);
+  }
+};
+
+struct StereoDelay {
+  static constexpr int kMaxSamples = 96000;
+  std::vector<float> bufL;
+  std::vector<float> bufR;
+  int writePos = 0;
+
+  StereoDelay() : bufL(kMaxSamples, 0.0f), bufR(kMaxSamples, 0.0f) {}
+
+  inline void process(float& l, float& r, float timeParam, float feedbackMixParam, float sampleRate) {
+    float ms = 80.0f + std::clamp(timeParam, 0.0f, 1.0f) * 520.0f;
+    int delaySamples = std::clamp(static_cast<int>(ms * 0.001f * sampleRate), 64, kMaxSamples - 1);
+    int delayR = std::clamp(static_cast<int>(delaySamples * 0.75f), 64, kMaxSamples - 1);
+
+    int readL = (writePos - delaySamples + kMaxSamples) % kMaxSamples;
+    int readR = (writePos - delayR + kMaxSamples) % kMaxSamples;
+
+    float dL = bufL[readL];
+    float dR = bufR[readR];
+
+    float amt = std::clamp(feedbackMixParam, 0.0f, 1.0f);
+    float fb = 0.15f + amt * 0.48f;
+    float mix = amt * 0.55f;
+
+    // Cross-feedback (subtle ping-pong stereo echo)
+    bufL[writePos] = l + dR * fb;
+    bufR[writePos] = r + dL * fb;
+    writePos = (writePos + 1) % kMaxSamples;
+
+    l = l * (1.0f - mix * 0.3f) + dL * mix;
+    r = r * (1.0f - mix * 0.3f) + dR * mix;
+  }
+};
+
+struct VoiceFilterFx {
+  Biquad hpf;
+  Biquad lpf;
+  float lastMode = -1.0f;
+
+  inline void process(float& l, float& r, float modeParam, float driveParam, float sampleRate) {
+    int mode = (modeParam < 0.33f) ? 0 : (modeParam < 0.66f ? 1 : 2); // 0=Radio, 1=Phone, 2=Megaphone
+    if (std::abs(static_cast<float>(mode) - lastMode) > 0.1f) {
+      if (mode == 0) {
+        hpf.setHighPass(sampleRate, 360.0f, 0.9f);
+        lpf.setPeaking(sampleRate, 1800.0f, 4.5f, 1.0f);
+      } else if (mode == 1) {
+        hpf.setHighPass(sampleRate, 550.0f, 1.1f);
+        lpf.setPeaking(sampleRate, 1300.0f, 6.0f, 1.4f);
+      } else {
+        hpf.setHighPass(sampleRate, 620.0f, 1.2f);
+        lpf.setPeaking(sampleRate, 2200.0f, 7.5f, 1.2f);
+      }
+      lastMode = static_cast<float>(mode);
+    }
+
+    hpf.processStereo(l, r);
+    lpf.processStereo(l, r);
+
+    float drive = 1.5f + std::clamp(driveParam, 0.0f, 1.0f) * 5.0f;
+    l = std::tanh(l * drive) / std::tanh(drive);
+    r = std::tanh(r * drive) / std::tanh(drive);
+  }
+};
+
+struct MasterLimiter {
+  float env = 0.0f;
+
+  inline void process(float& l, float& r, float driveDb, float ceilingDb, float sampleRate, bool enabled) {
+    if (!enabled) return;
+    float driveLin = dbToLinear(std::clamp(driveDb, 0.0f, 12.0f));
+    float ceilLin = dbToLinear(std::clamp(ceilingDb, -6.0f, -0.1f));
+
+    l *= driveLin;
+    r *= driveLin;
+
+    float peak = std::max(std::abs(l), std::abs(r));
+    float rel = std::exp(-1.0f / (0.065f * sampleRate));
+    env = (peak > env) ? peak : (rel * env + (1.0f - rel) * peak);
+
+    float gain = (env > ceilLin) ? (ceilLin / (env + 1e-6f)) : 1.0f;
+    l = std::clamp(l * gain, -ceilLin, ceilLin);
+    r = std::clamp(r * gain, -ceilLin, ceilLin);
   }
 };
 

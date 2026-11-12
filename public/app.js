@@ -84,6 +84,7 @@
   const bgmUploadInput = document.getElementById('bgm-upload-input');
   const bgmLoadBtn = document.getElementById('bgm-load-btn');
   const bgmTrackLabel = document.getElementById('bgm-track-label');
+  const bgmRestartBtn = document.getElementById('bgm-restart-btn');
   const bgmPlayBtn = document.getElementById('bgm-play-btn');
   const bgmLoopBtn = document.getElementById('bgm-loop-btn');
   const autoDuckBtn = document.getElementById('auto-duck-btn');
@@ -263,7 +264,7 @@
   function updateHeaderGlobals() {
     if (!appState) return;
     const g = appState.globals || {};
-    const activeScene = appState.activeScene;
+    const activeScene = appState.activeSceneId;
     sceneBar.querySelectorAll('.scene-btn').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.scene === activeScene);
     });
@@ -411,6 +412,46 @@
     cardId.appendChild(nameRow);
 
     if (selectedChannel < 6) {
+      const srcRow = document.createElement('label');
+      srcRow.className = 'dsp-row';
+      srcRow.innerHTML = `<span>Sumber Perangkat</span>`;
+      const srcSel = document.createElement('select');
+      [
+        [0, 'Hardware Mic / Audio Interface'],
+        [2, 'System Loopback (Discord / Game / Browser)'],
+      ].forEach(([val, label]) => {
+        const opt = document.createElement('option');
+        opt.value = String(val);
+        opt.textContent = label;
+        if (Number(ch.sourceMode) === val) opt.selected = true;
+        srcSel.appendChild(opt);
+      });
+      srcSel.addEventListener('change', () => {
+        sendChParam(selectedChannel, 'sourceMode', Number(srcSel.value));
+      });
+      srcRow.appendChild(srcSel);
+      cardId.appendChild(srcRow);
+
+      const modeRow = document.createElement('label');
+      modeRow.className = 'dsp-row';
+      modeRow.innerHTML = `<span>Mode Input Kanal</span>`;
+      const modeSel = document.createElement('select');
+      [
+        ['0', 'MONO (1 kanal tunggal — aman buat Mic 1/2)'],
+        ['1', 'STEREO (2 kanal berpasangan L+R)'],
+      ].forEach(([val, label]) => {
+        const opt = document.createElement('option');
+        opt.value = val;
+        opt.textContent = label;
+        if ((ch.stereoInput ? '1' : '0') === val) opt.selected = true;
+        modeSel.appendChild(opt);
+      });
+      modeSel.addEventListener('change', () => {
+        sendChParam(selectedChannel, 'stereoInput', modeSel.value === '1');
+      });
+      modeRow.appendChild(modeSel);
+      cardId.appendChild(modeRow);
+
       const offRow = document.createElement('label');
       offRow.className = 'dsp-row';
       offRow.innerHTML = `<span>Hardware Input Slot</span>`;
@@ -418,7 +459,10 @@
       for (let slot = 0; slot < 8; slot++) {
         const opt = document.createElement('option');
         opt.value = String(slot);
-        opt.textContent = selectedChannel < 3 ? `Mic/Interface In ${slot + 1}` : `Music/Loopback In ${slot + 1}`;
+        const prefix = Number(ch.sourceMode) === 2 ? 'Loopback' : 'Hw Interface';
+        opt.textContent = ch.stereoInput
+          ? `${prefix} Stereo ${slot + 1}-${slot + 2}`
+          : `${prefix} Mono In ${slot + 1}`;
         if ((ch.inputChannelOffset || 0) === slot) opt.selected = true;
         offSel.appendChild(opt);
       }
@@ -434,18 +478,18 @@
     duckRow.innerHTML = `<span>Auto-Ducking Role</span>`;
     const duckSel = document.createElement('select');
     [
-      ['none', 'Normal (Tidak terpengaruh)'],
-      ['host', 'Host / Trigger (Menurunkan musik)'],
-      ['ducked', 'Musik / Target (Otomatis pelan saat Host bicara)'],
+      [0, 'Normal (Tidak terpengaruh)'],
+      [1, 'Host / Trigger (Menurunkan musik)'],
+      [2, 'Musik / Target (Otomatis pelan saat Host bicara)'],
     ].forEach(([val, label]) => {
       const opt = document.createElement('option');
-      opt.value = val;
+      opt.value = String(val);
       opt.textContent = label;
-      if (ch.duckRole === val) opt.selected = true;
+      if (Number(ch.duckRole || 0) === val) opt.selected = true;
       duckSel.appendChild(opt);
     });
     duckSel.addEventListener('change', () => {
-      sendChParam(selectedChannel, 'duckRole', duckSel.value);
+      sendChParam(selectedChannel, 'duckRole', Number(duckSel.value));
     });
     duckRow.appendChild(duckSel);
     cardId.appendChild(duckRow);
@@ -516,6 +560,85 @@
       sendChParam(selectedChannel, 'eqMidHz', val);
     }));
     fatBody.appendChild(cardComp);
+
+    // 4. Built-in Insert Rack (Slot A & Slot B)
+    const INSERT_SPECS = [
+      { id: 0, name: 'Kosong (Bypass)', p1: null, p2: null },
+      { id: 1, name: 'De-Esser (Desis S)', p1: 'Freq (4.5-9k)', p2: 'Reduction' },
+      { id: 2, name: 'Vocal Warmth (Tube)', p1: 'Warmth Drive', p2: 'Air Presence' },
+      { id: 3, name: 'Stereo Delay / Echo', p1: 'Delay Time', p2: 'Feedback & Mix' },
+      { id: 4, name: 'Voice FX (Radio/Telp)', p1: 'Radio/Telp/Mega', p2: 'FX Drive' },
+    ];
+
+    const renderInsertSlot = (slotLabel, keyKind, keyP1, keyP2) => {
+      const card = document.createElement('div');
+      card.className = 'dsp-card';
+      const curKind = Number(ch[keyKind] || 0);
+      const spec = INSERT_SPECS.find((s) => s.id === curKind) || INSERT_SPECS[0];
+
+      const row = document.createElement('label');
+      row.className = 'dsp-row';
+      row.innerHTML = `<span style="color:#a7f3d0;font-weight:700;">${slotLabel}</span>`;
+      const sel = document.createElement('select');
+      INSERT_SPECS.forEach((optSpec) => {
+        const opt = document.createElement('option');
+        opt.value = String(optSpec.id);
+        opt.textContent = optSpec.name;
+        if (optSpec.id === curKind) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      sel.addEventListener('change', () => {
+        sendChParam(selectedChannel, keyKind, Number(sel.value));
+        renderFatInspector();
+      });
+      row.appendChild(sel);
+      card.appendChild(row);
+
+      if (spec.p1) {
+        card.appendChild(
+          makeSliderRow(spec.p1, Math.round((ch[keyP1] ?? 0.5) * 100), 0, 100, 1, '%', (val) => {
+            sendChParam(selectedChannel, keyP1, Number((val / 100).toFixed(2)));
+          })
+        );
+      }
+      if (spec.p2) {
+        card.appendChild(
+          makeSliderRow(spec.p2, Math.round((ch[keyP2] ?? 0.5) * 100), 0, 100, 1, '%', (val) => {
+            sendChParam(selectedChannel, keyP2, Number((val / 100).toFixed(2)));
+          })
+        );
+      }
+      fatBody.appendChild(card);
+    };
+
+    renderInsertSlot('Insert Slot A (Built-in)', 'insertA', 'insertAParam1', 'insertAParam2');
+    renderInsertSlot('Insert Slot B (Built-in)', 'insertB', 'insertBParam1', 'insertBParam2');
+
+    // 5. Master OBS Broadcast Limiter
+    const g = appState.globals || {};
+    const cardLim = document.createElement('div');
+    cardLim.className = 'dsp-card';
+    const limHead = document.createElement('div');
+    limHead.className = 'dsp-card-head';
+    limHead.innerHTML = `<span>Master OBS Limiter</span>`;
+    const limBtn = document.createElement('button');
+    limBtn.type = 'button';
+    limBtn.className = `tb-btn ${g.masterLimiterOn !== false ? 'is-on' : ''}`;
+    limBtn.textContent = g.masterLimiterOn !== false ? 'LIMITER ON' : 'BYPASS';
+    limBtn.addEventListener('click', () => {
+      sendGlobalParam('masterLimiterOn', !(g.masterLimiterOn !== false));
+      renderFatInspector();
+    });
+    limHead.appendChild(limBtn);
+    cardLim.appendChild(limHead);
+
+    cardLim.appendChild(makeSliderRow('Loudness Drive', g.masterLimiterDriveDb ?? 2.0, 0, 12, 0.5, 'dB', (val) => {
+      sendGlobalParam('masterLimiterDriveDb', val);
+    }));
+    cardLim.appendChild(makeSliderRow('Output Ceiling', g.masterLimiterCeilingDb ?? -1.0, -6.0, -0.1, 0.1, 'dBFS', (val) => {
+      sendGlobalParam('masterLimiterCeilingDb', val);
+    }));
+    fatBody.appendChild(cardLim);
   }
 
   function makeSliderRow(label, initialVal, min, max, step, unit, onChange) {
@@ -1015,11 +1138,15 @@
         },
       });
 
-      // Condensed Top Input Source Selector Pill (replaces huge XLR/TRS bays)
-      let srcText = `${ch.sourceMode || 'mic'} ▾`;
-      let srcActive = ch.sourceMode === 'mic';
+      // Condensed Top Input Source Selector Pill (DAW-style Patch + Mono/Stereo)
+      let srcText = 'HW 1 · MONO';
+      let srcActive = Number(ch.sourceMode) === 0;
       if (i < 6) {
-        srcText = `${ch.sourceMode === 'line' ? 'line' : i >= 3 ? 'loop' : 'mic'} · in ${(ch.inputChannelOffset || 0) + 1}`;
+        const slot = (ch.inputChannelOffset || 0) + 1;
+        const srcPrefix = Number(ch.sourceMode) === 2 ? 'LOOP' : 'HW';
+        const isSt = ch.stereoInput !== false;
+        srcText = isSt ? `${srcPrefix} ${slot}-${slot + 1} · ST` : `${srcPrefix} ${slot} · MONO`;
+        srcActive = Number(ch.sourceMode) === 0;
       } else if (i === 6) {
         srcText = g.bgmPlaying ? 'BGM PLAY ▶' : 'BGM DECK ▾';
         srcActive = Boolean(g.bgmPlaying);
@@ -1040,16 +1167,14 @@
         activeText: isGreen ? '#a7f3d0' : '#7dd3fc',
         offBg: '#232932',
         offText: '#cbd5e1',
-        fontSize: 8.5,
+        fontSize: 8.2,
         controlId: `src_${i}`,
-        label: `Input Ch ${numLabel}`,
+        label: `Patch Input Ch ${numLabel}`,
         onClick: () => {
           if (i < 6) {
-            const nextOffset = ((ch.inputChannelOffset || 0) + 1) % 4;
+            const step = ch.stereoInput !== false ? 2 : 1;
+            const nextOffset = ((ch.inputChannelOffset || 0) + step) % 8;
             sendChParam(i, 'inputChannelOffset', nextOffset);
-            if (i < 3) {
-              sendChParam(i, 'sourceMode', nextOffset === 0 ? 'mic' : 'line');
-            }
           } else if (i === 6) {
             if (!appState.bgm?.trackName) {
               bgmUploadInput.click();
@@ -1094,13 +1219,13 @@
         label: `${ch.name} Route Monitor`,
         onClick: () => sendChParam(i, 'routeMonitor', !ch.routeMonitor),
       });
-      const dspBusy = Boolean(ch.hpfOn || ch.gateOn || ch.compOn);
+      const dspBusy = Boolean(ch.hpfOn || ch.gateOn || ch.compOn || Number(ch.insertA) > 0 || Number(ch.insertB) > 0);
       drawPillButton({
         x: x + 9 + pillW * 2,
         y: 67,
         w: pillW,
         h: 17,
-        text: 'DSP',
+        text: Number(ch.insertA) > 0 || Number(ch.insertB) > 0 ? 'INS•' : 'DSP',
         active: isSelected && !fatPanel.classList.contains('is-collapsed'),
         activeBg: '#92400e',
         activeBorder: '#f59e0b',
@@ -2004,6 +2129,11 @@
       return;
     }
     sendGlobalParam('bgmPlaying', !appState.globals.bgmPlaying);
+  });
+
+  bgmRestartBtn?.addEventListener('click', () => {
+    sendWs({ type: 'bgm_restart' });
+    setReadout('BGM diulang dari awal');
   });
 
   bgmLoopBtn.addEventListener('click', () => {

@@ -175,7 +175,14 @@ int main() {
       else if (key == "duckRole") p.duckRole.store(static_cast<int>(val), std::memory_order_relaxed);
       else if (key == "testTone") p.testTone.store(bval, std::memory_order_relaxed);
       else if (key == "inputChannelOffset") p.inputChannelOffset.store(static_cast<int>(val), std::memory_order_relaxed);
+      else if (key == "stereoInput") p.stereoInput.store(bval, std::memory_order_relaxed);
       else if (key == "sourceMode") p.sourceMode.store(static_cast<int>(val), std::memory_order_relaxed);
+      else if (key == "insertA") p.insertA.store(static_cast<int>(val), std::memory_order_relaxed);
+      else if (key == "insertAParam1") p.insertAParam1.store(val, std::memory_order_relaxed);
+      else if (key == "insertAParam2") p.insertAParam2.store(val, std::memory_order_relaxed);
+      else if (key == "insertB") p.insertB.store(static_cast<int>(val), std::memory_order_relaxed);
+      else if (key == "insertBParam1") p.insertBParam1.store(val, std::memory_order_relaxed);
+      else if (key == "insertBParam2") p.insertBParam2.store(val, std::memory_order_relaxed);
     } else if (cmd == "GLOBAL" && parts.size() >= 3) {
       const std::string& key = parts[1];
       float val = std::stof(parts[2]);
@@ -189,6 +196,9 @@ int main() {
       else if (key == "streamMasterMute") engine.streamMasterMute.store(bval, std::memory_order_relaxed);
       else if (key == "monitorMasterDb") engine.monitorMasterDb.store(val, std::memory_order_relaxed);
       else if (key == "monitorMasterMute") engine.monitorMasterMute.store(bval, std::memory_order_relaxed);
+      else if (key == "masterLimiterOn") engine.masterLimiterOn.store(bval, std::memory_order_relaxed);
+      else if (key == "masterLimiterDriveDb") engine.masterLimiterDriveDb.store(val, std::memory_order_relaxed);
+      else if (key == "masterLimiterCeilingDb") engine.masterLimiterCeilingDb.store(val, std::memory_order_relaxed);
       else if (key == "bgmPlaying") engine.bgm.playing.store(bval, std::memory_order_relaxed);
       else if (key == "bgmLoop") engine.bgm.loop.store(bval, std::memory_order_relaxed);
     } else if (cmd == "BGM_LOAD" && parts.size() >= 2) {

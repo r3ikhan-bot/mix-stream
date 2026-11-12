@@ -258,7 +258,9 @@ class AudioEngineProcess {
       'trimDb', 'phaseInvert', 'hpfOn', 'hpfHz', 'gateOn', 'gateThreshDb',
       'eqOn', 'eqLowDb', 'eqMidHz', 'eqMidDb', 'eqHighDb', 'compOn', 'compThreshDb',
       'compRatio', 'compMakeupDb', 'reverbSend', 'pan', 'faderDb', 'mute',
-      'solo', 'routeStream', 'routeMonitor', 'duckRole', 'testTone', 'inputChannelOffset', 'sourceMode',
+      'solo', 'routeStream', 'routeMonitor', 'duckRole', 'testTone',
+      'inputChannelOffset', 'stereoInput', 'sourceMode',
+      'insertA', 'insertAParam1', 'insertAParam2', 'insertB', 'insertBParam1', 'insertBParam2',
     ];
     for (const ch of state.channels) {
       for (const k of chKeys) {
