@@ -1,0 +1,22 @@
+{
+  "name": "studio-stream-mixer",
+  "version": "1.0.0",
+  "description": "Cross-platform (macOS & Windows) broadcast & live-streaming audio mixer inspired by Fender Studio One Console, tailored for OBS Studio and TikTok Live Studio with 2-way Wi-Fi Mobile Remote.",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "desktop": "node server.mjs --desktop",
+    "test": "node scripts/smoke-test.mjs"
+  },
+  "keywords": [
+    "audio-mixer",
+    "live-streaming",
+    "obs",
+    "tiktok-live-studio",
+    "studio-one",
+    "coreaudio",
+    "wasapi"
+  ],
+  "license": "MIT"
+}

@@ -1,0 +1,16 @@
+{
+  "name": "StudioStream Mixer",
+  "short_name": "StudioStream",
+  "description": "Fender Studio One–inspired Live Streaming Mixer for OBS & TikTok Live Studio",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#161920",
+  "theme_color": "#1d2129",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

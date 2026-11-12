@@ -1,0 +1,170 @@
+name: Build & Release StudioStream Mixer
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows x64 Portable
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup MSVC Compiler
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Compile Windows WASAPI Audio Engine
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          cl /std:c++17 /O2 /EHsc /W3 engine\main.cpp engine\WinAudioBackend.cpp /Fe:build\studio-stream-engine.exe ole32.lib uuid.lib avrt.lib mmdevapi.lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run Smoke Test on Windows
+        shell: pwsh
+        run: |
+          node --check server.mjs
+          node --check lib\ws.mjs
+          node --check lib\default-state.mjs
+          node --check public\app.js
+          node scripts\smoke-test.mjs
+
+      - name: Stage Portable Windows Bundle
+        shell: pwsh
+        run: |
+          $stage = "dist\StudioStream-Mixer-Windows-x64"
+          New-Item -ItemType Directory -Force -Path "$stage\build", "$stage\runtime", "$stage\samples" | Out-Null
+          Copy-Item "build\studio-stream-engine.exe" "$stage\build\studio-stream-engine.exe"
+          "prebuilt" | Set-Content -Path "$stage\build\.prebuilt" -Encoding UTF8
+
+          $nodeExe = (Get-Command node).Source
+          Copy-Item $nodeExe "$stage\runtime\node.exe"
+
+          Copy-Item -Recurse "engine" "$stage\engine"
+          Copy-Item -Recurse "lib" "$stage\lib"
+          Copy-Item -Recurse "public" "$stage\public"
+          Copy-Item "server.mjs", "package.json", "Start StudioStream (Windows).bat", "README.md" "$stage\"
+
+          # Verify portable bundle runs with bundled runtime\node.exe (no system PATH dependency)
+          $env:PORT = "18791"
+          $env:STATE_FILE = "$env:TEMP\ssm_win_stage.json"
+          $proc = Start-Process -FilePath "$stage\runtime\node.exe" -ArgumentList "server.mjs" -WorkingDirectory $stage -PassThru -WindowStyle Hidden
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 40; $i++) {
+              try {
+                $r = Invoke-WebRequest -Uri "http://127.0.0.1:18791/api/info" -UseBasicParsing -TimeoutSec 2
+                if ($r.StatusCode -eq 200) { $ready = $true; break }
+              } catch {}
+              Start-Sleep -Milliseconds 200
+            }
+            if (-not $ready) { throw "Portable Windows bundle failed startup verification" }
+          } finally {
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+            Remove-Item -ErrorAction SilentlyContinue $env:STATE_FILE
+          }
+
+          Compress-Archive -Path $stage -DestinationPath "dist\StudioStream-Mixer-Windows-x64.zip" -Force
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StudioStream-Mixer-Windows-x64
+          path: dist/StudioStream-Mixer-Windows-x64.zip
+
+  build-macos:
+    name: Build macOS Portable
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Compile Universal macOS Audio Engine & Native Desktop Shell
+        run: |
+          mkdir -p build
+          clang++ -std=c++17 -O2 -Wall -Wextra -arch arm64 -arch x86_64 \
+            -framework CoreAudio -framework AudioToolbox -framework CoreFoundation \
+            engine/main.cpp engine/MacAudioBackend.cpp -o build/studio-stream-engine
+
+          if swiftc -O -target arm64-apple-macos14.0 -framework Cocoa -framework WebKit \
+              desktop/MacWindow.swift -o build/StudioStreamDesktop-arm64 && \
+             swiftc -O -target x86_64-apple-macos14.0 -framework Cocoa -framework WebKit \
+              desktop/MacWindow.swift -o build/StudioStreamDesktop-x86_64; then
+            lipo -create build/StudioStreamDesktop-arm64 build/StudioStreamDesktop-x86_64 \
+              -output build/StudioStreamDesktop
+            rm -f build/StudioStreamDesktop-arm64 build/StudioStreamDesktop-x86_64
+          else
+            rm -f build/StudioStreamDesktop-arm64 build/StudioStreamDesktop-x86_64
+            swiftc -O -framework Cocoa -framework WebKit \
+              desktop/MacWindow.swift -o build/StudioStreamDesktop
+          fi
+          chmod +x build/studio-stream-engine build/StudioStreamDesktop
+
+      - name: Run Smoke Test on macOS
+        run: |
+          node --check server.mjs
+          node --check lib/ws.mjs
+          node --check lib/default-state.mjs
+          node --check public/app.js
+          node scripts/smoke-test.mjs
+
+      - name: Stage Portable macOS Bundle
+        run: |
+          STAGE="dist/StudioStream-Mixer-macOS"
+          mkdir -p "$STAGE/build" "$STAGE/runtime" "$STAGE/samples"
+          cp build/studio-stream-engine build/StudioStreamDesktop "$STAGE/build/"
+          echo "prebuilt" > "$STAGE/build/.prebuilt"
+
+          cp "$(command -v node)" "$STAGE/runtime/node"
+          chmod +x "$STAGE/runtime/node"
+
+          cp -R desktop engine lib public "$STAGE/"
+          cp server.mjs package.json "Start StudioStream (macOS).command" README.md "$STAGE/"
+          chmod +x "$STAGE/Start StudioStream (macOS).command"
+
+          ditto -c -k --sequesterRsrc --keepParent "$STAGE" dist/StudioStream-Mixer-macOS.zip
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StudioStream-Mixer-macOS
+          path: dist/StudioStream-Mixer-macOS.zip
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-windows, build-macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/StudioStream-Mixer-Windows-x64/StudioStream-Mixer-Windows-x64.zip
+            artifacts/StudioStream-Mixer-macOS/StudioStream-Mixer-macOS.zip

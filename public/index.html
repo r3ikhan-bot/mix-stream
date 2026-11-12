@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#191c22">
+  <title>StudioStream Mixer — OBS &amp; TTLS Console</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="s1-topbar">
+    <div class="tb-cluster">
+      <div class="s1-brand">
+        <span id="ws-dot" class="ws-dot" aria-hidden="true"></span>
+        <h1>StudioStream</h1>
+        <span class="s1-tag">OBS · TTLS</span>
+      </div>
+      <button type="button" id="audio-setup-btn" class="s1-btn">
+        <span id="audio-status-label">Audio Setup</span>
+      </button>
+    </div>
+
+    <div class="tb-cluster tb-scenes" id="scene-bar" role="group" aria-label="Streaming Scenes"></div>
+
+    <div class="tb-cluster">
+      <button type="button" id="auto-duck-btn" class="s1-btn" aria-pressed="true">
+        Auto-Duck <span id="duck-db-badge" class="badge-val">0 dB</span>
+      </button>
+      <button type="button" id="toggle-pads-btn" class="s1-btn" aria-pressed="true">Pads</button>
+      <button type="button" id="toggle-fat-btn" class="s1-btn" aria-pressed="true">Fat Channel</button>
+      <button type="button" id="remote-info-btn" class="s1-btn accent">HP Remote</button>
+    </div>
+  </header>
+
+  <main class="s1-workspace">
+    <section class="console-stage" aria-label="Studio One Style Mixer Console">
+      <div id="console-rack" class="console-rack"></div>
+      <div id="master-rack" class="master-rack"></div>
+    </section>
+
+    <aside id="fat-panel" class="fat-panel" aria-labelledby="fat-title">
+      <div class="fat-head">
+        <div>
+          <h2 id="fat-title">Fat Channel</h2>
+          <p id="fat-channel-name" class="fat-sub">Mic / Vocal</p>
+        </div>
+        <button type="button" id="fat-close-btn" class="s1-btn small">Tutup</button>
+      </div>
+      <div id="fat-body" class="fat-body"></div>
+    </aside>
+  </main>
+
+  <section id="soundboard-dock" class="soundboard-dock" aria-label="Live Soundboard Pads">
+    <div class="dock-head">
+      <div class="dock-title-wrap">
+        <h2>Soundboard Pads</h2>
+        <span class="dock-hint">Klik pad untuk putar ke Stream (OBS/TTLS) &amp; Monitor · Upload .WAV kustom per pad</span>
+      </div>
+      <div class="dock-actions">
+        <input type="file" id="wav-upload-input" accept=".wav,audio/wav" hidden>
+        <button type="button" id="stop-pads-btn" class="s1-btn danger small">Stop All</button>
+      </div>
+    </div>
+    <div id="pads-row" class="pads-row"></div>
+  </section>
+
+  <dialog id="audio-dialog" closedby="any" aria-labelledby="ad-title">
+    <form method="dialog" class="dialog-head">
+      <div>
+        <h2 id="ad-title">Audio Device &amp; OBS / TTLS Routing</h2>
+        <p id="ad-status-sub" class="dialog-sub">CoreAudio / WASAPI</p>
+      </div>
+      <button type="submit" class="s1-btn" value="close">Tutup</button>
+    </form>
+    <div class="dialog-body">
+      <div class="form-row">
+        <label for="sel-input-dev">Input Hardware (Mic / Audio Interface)</label>
+        <select id="sel-input-dev"></select>
+      </div>
+      <div class="form-row">
+        <label for="sel-mon-dev">Monitor Output (Headphone / Speaker)</label>
+        <select id="sel-mon-dev"></select>
+      </div>
+      <div class="form-row">
+        <label for="sel-stream-dev">Stream Output ke OBS / TikTok Live Studio (Virtual Cable)</label>
+        <select id="sel-stream-dev"></select>
+      </div>
+      <div class="form-row">
+        <label for="sel-buf-size">Buffer Size (Latency)</label>
+        <select id="sel-buf-size">
+          <option value="128">128 samples (Ultra Low)</option>
+          <option value="256">256 samples (Balanced)</option>
+          <option value="512">512 samples (Safe)</option>
+        </select>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" id="refresh-dev-btn" class="s1-btn">Scan Ulang Device</button>
+        <button type="button" id="apply-audio-btn" class="s1-btn accent">Terapkan Audio</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="remote-dialog" closedby="any" aria-labelledby="rd-title">
+    <form method="dialog" class="dialog-head">
+      <div>
+        <h2 id="rd-title">2-Way Mobile Remote (Wi-Fi)</h2>
+        <p class="dialog-sub">Fader, Mute, Pads, Scene &amp; Meter LED tersinkron dua arah</p>
+      </div>
+      <button type="submit" class="s1-btn" value="close">Tutup</button>
+    </form>
+    <div class="dialog-body">
+      <p class="remote-copy">Buka salah satu alamat di bawah ini di browser HP (dalam jaringan Wi-Fi yang sama):</p>
+      <ul id="lan-list" class="lan-list"></ul>
+      <div class="dialog-actions">
+        <button type="button" id="reset-all-btn" class="s1-btn danger">Reset Default Mixer</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
