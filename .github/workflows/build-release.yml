@@ -89,7 +89,7 @@ jobs:
             $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
           }
           if (-not $makensis) { throw "NSIS makensis.exe not found" }
-          & $makensis "/DSTAGE_DIR=$stage" "/DOUT_EXE=dist\DM-Audio-Windows-x64.exe" "desktop\portable.nsi"
+          & $makensis /NOCD "/DSTAGE_DIR=$PWD\$stage" "/DOUT_EXE=$PWD\dist\DM-Audio-Windows-x64.exe" "desktop\portable.nsi"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload Windows Artifact
