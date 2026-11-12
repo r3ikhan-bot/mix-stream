@@ -623,7 +623,7 @@ server.on('upgrade', (req, socket) => {
           appState.audioConfig = { ...appState.audioConfig, ...msg.config };
           engine.startAudio(appState.audioConfig);
           scheduleSave(appState);
-          wsHub.broadcast({ type: 'full_state', state: appState }, client);
+          wsHub.broadcast({ type: 'full_state', state: appState });
           break;
         }
         case 'refresh_devices': {

@@ -219,7 +219,12 @@
         syncDomAll();
       } else if (msg.type === 'devices') {
         devices = msg.devices || [];
-        populateDeviceSelects();
+        if (audioDialog?.open) {
+          renderHardwareDeviceList();
+          updateAudioHardwareMeta();
+        } else {
+          populateDeviceSelects();
+        }
       } else if (msg.type === 'audio_status') {
         audioStatus = msg.status || audioStatus;
         updateAudioBadge();
@@ -545,12 +550,12 @@
       const row = document.createElement('div');
       row.className = `hw-device-row${hasRole ? ' has-role' : ''}`;
 
+      const checkWrap = document.createElement('div');
+      checkWrap.className = 'hw-check-wrap';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'hw-check';
       if (dev.in > 0) {
-        const checkWrap = document.createElement('div');
-        checkWrap.className = 'hw-check-wrap';
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.className = 'hw-check';
         cb.checked = inPool;
         cb.title = 'Centang untuk masukkan input ini ke Device Pool (maks 4)';
         cb.addEventListener('change', () => {
@@ -570,15 +575,23 @@
           renderHardwareDeviceList();
           updateAudioHardwareMeta();
         });
-        checkWrap.appendChild(cb);
-        if (inPool) {
-          const badge = document.createElement('span');
-          badge.className = 'hw-slot-badge';
-          badge.textContent = `IN ${poolIdx + 1}`;
-          checkWrap.appendChild(badge);
-        }
-        row.appendChild(checkWrap);
+      } else {
+        cb.checked = isMon || isObs;
+        cb.title = 'Centang untuk jadikan perangkat ini Monitor Output (MON)';
+        cb.addEventListener('change', () => {
+          draftAudioConfig.monitorOutDevId = cb.checked ? dev.id : '';
+          renderHardwareDeviceList();
+          updateAudioHardwareMeta();
+        });
       }
+      checkWrap.appendChild(cb);
+      if (inPool) {
+        const badge = document.createElement('span');
+        badge.className = 'hw-slot-badge';
+        badge.textContent = `IN ${poolIdx + 1}`;
+        checkWrap.appendChild(badge);
+      }
+      row.appendChild(checkWrap);
 
       const info = document.createElement('div');
       info.className = 'hw-dev-info';
@@ -2655,6 +2668,9 @@
       bufferSize: Number(selBufSize?.value || draftAudioConfig.bufferSize || 256),
       sampleRate: Number(selSampleRate?.value || draftAudioConfig.sampleRate || 0),
     };
+    if (appState) {
+      appState.audioConfig = { ...appState.audioConfig, ...config };
+    }
     sendWs({ type: 'audio_config', config });
     audioDialog.close();
     setReadout('Konfigurasi Hardware Setup diterapkan');
