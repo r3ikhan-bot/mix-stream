@@ -13,6 +13,9 @@ struct AudioDeviceInfo {
   int outputChannels = 0;
   bool isDefaultInput = false;
   bool isDefaultOutput = false;
+  double sampleRate = 48000.0;
+  std::vector<int> sampleRates;
+  std::string driver;
 };
 
 class AudioBackend {
@@ -24,7 +27,8 @@ public:
                      const std::string& musicInputDevId,
                      const std::string& monitorOutDevId,
                      const std::string& streamOutDevId,
-                     int bufferSize) = 0;
+                     int bufferSize,
+                     int sampleRate = 0) = 0;
   virtual void stop() = 0;
   virtual bool isRunning() const = 0;
   virtual std::string statusText() const = 0;

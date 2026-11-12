@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>DM12 Digital Mixer · StudioStream</title>
+  <title>DM Audio — Digital Mixer Console</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -11,7 +11,7 @@
     <header class="dm-topbar">
       <div class="tb-group tb-brand">
         <span id="ws-dot" class="status-dot" title="Status Koneksi WebSocket"></span>
-        <h1 class="brand-title">DM12 <span class="brand-sub">StudioStream</span></h1>
+        <h1 class="brand-title">DM Audio</h1>
         <button id="audio-setup-btn" class="tb-btn tb-audio-btn" type="button" title="Konfigurasi Audio Interface & Routing OBS">
           <span class="audio-led"></span>
           <span id="audio-status-label">Audio I/O...</span>
@@ -26,6 +26,13 @@
           <button class="scene-btn" type="button" data-scene="karaoke">Karaoke</button>
           <button class="scene-btn" type="button" data-scene="gaming">Gaming</button>
           <button class="scene-btn" type="button" data-scene="brb">BRB</button>
+        </div>
+
+        <div class="preset-bar" title="Preset User Tersimpan">
+          <select id="preset-select" class="tb-select" aria-label="Pilih Preset Tersimpan">
+            <option value="">Preset User...</option>
+          </select>
+          <button id="save-preset-btn" class="tb-btn" type="button">+ Preset</button>
         </div>
 
         <div class="bgm-deck" title="Pemutar Musik Latar (Ch 7-8)">
@@ -50,7 +57,7 @@
 
     <main id="canvasContainer" class="console-stage">
       <div class="canvas-scroll-wrap">
-        <canvas id="mixerCanvas" aria-label="DM12 Digital Mixer Console"></canvas>
+        <canvas id="mixerCanvas" aria-label="DM Audio Digital Mixer Console"></canvas>
       </div>
 
       <aside id="fat-panel" class="fat-drawer is-collapsed" aria-label="DSP Channel Inspector">
@@ -110,6 +117,19 @@
             <option value="1024">1024 samples (~21.3 ms)</option>
           </select>
         </label>
+        <label class="field-row">
+          <span>Sample Rate Audio Interface</span>
+          <select id="sel-sample-rate">
+            <option value="0">Auto (Ikuti Hardware Interface)</option>
+            <option value="44100">44100 Hz (44.1 kHz)</option>
+            <option value="48000">48000 Hz (48 kHz · OBS Default)</option>
+            <option value="88200">88200 Hz (88.2 kHz)</option>
+            <option value="96000">96000 Hz (96 kHz)</option>
+          </select>
+        </label>
+        <div id="audio-hw-meta" class="modal-hint">
+          Membaca info driver &amp; sample rate hardware...
+        </div>
         <p class="modal-hint">
           Tips: Arahkan <b>Stream Output</b> ke virtual cable (mis. <i>BlackHole 2ch</i> / <i>VB-Cable</i>) lalu pilih virtual cable itu sebagai Mic/Audio Input di OBS Studio atau TikTok Live Studio.
         </p>
@@ -117,6 +137,29 @@
       <div class="modal-foot">
         <button id="refresh-dev-btn" class="tb-btn" type="button">Refresh Device</button>
         <button id="apply-audio-btn" class="tb-btn tb-primary" type="button">Terapkan &amp; Simpan</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="preset-dialog" class="modal-dialog" closedby="any">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>Simpan &amp; Kelola Preset Mixer</h3>
+        <button class="tb-btn tb-close" type="button" data-close-dialog="preset-dialog">✕</button>
+      </div>
+      <div class="modal-body">
+        <label class="field-row">
+          <span>Nama Preset Baru</span>
+          <input id="preset-name-input" type="text" maxlength="28" placeholder="Misal: Podcast Malam / Karaoke Dangdut" />
+        </label>
+        <p class="modal-hint">
+          Menyimpan seluruh posisi fader, EQ, Gain, Reverb, Insert Slot A/B, Comp, Gate, Auto-Duck, dan nama channel.
+        </p>
+        <ul id="preset-list" class="lan-list"></ul>
+      </div>
+      <div class="modal-foot">
+        <button class="tb-btn" type="button" data-close-dialog="preset-dialog">Tutup</button>
+        <button id="confirm-save-preset-btn" class="tb-btn tb-primary" type="button">Simpan Preset</button>
       </div>
     </div>
   </dialog>

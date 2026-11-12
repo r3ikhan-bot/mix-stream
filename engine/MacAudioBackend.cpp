@@ -79,6 +79,75 @@ AudioDeviceID getDefaultDevice(AudioObjectPropertySelector selector) {
   return devId;
 }
 
+double getDeviceNominalSampleRate(AudioDeviceID devId) {
+  if (devId == kAudioObjectUnknown) return 48000.0;
+  AudioObjectPropertyAddress addr{
+      kAudioDevicePropertyNominalSampleRate,
+      kAudioObjectPropertyScopeGlobal,
+      kAudioObjectPropertyElementMain,
+  };
+  Float64 sr = 48000.0;
+  UInt32 size = sizeof(sr);
+  if (AudioObjectGetPropertyData(devId, &addr, 0, nullptr, &size, &sr) == noErr && sr > 8000.0) {
+    return static_cast<double>(sr);
+  }
+  return 48000.0;
+}
+
+std::vector<int> getDeviceSupportedSampleRates(AudioDeviceID devId) {
+  std::vector<int> rates;
+  if (devId == kAudioObjectUnknown) return rates;
+  AudioObjectPropertyAddress addr{
+      kAudioDevicePropertyAvailableNominalSampleRates,
+      kAudioObjectPropertyScopeGlobal,
+      kAudioObjectPropertyElementMain,
+  };
+  UInt32 size = 0;
+  if (AudioObjectGetPropertyDataSize(devId, &addr, 0, nullptr, &size) != noErr || size == 0) {
+    rates.push_back(static_cast<int>(getDeviceNominalSampleRate(devId)));
+    return rates;
+  }
+  size_t count = size / sizeof(AudioValueRange);
+  std::vector<AudioValueRange> ranges(count);
+  if (AudioObjectGetPropertyData(devId, &addr, 0, nullptr, &size, ranges.data()) != noErr) {
+    rates.push_back(static_cast<int>(getDeviceNominalSampleRate(devId)));
+    return rates;
+  }
+  const int candidates[] = {44100, 48000, 88200, 96000};
+  for (int cand : candidates) {
+    for (const auto& r : ranges) {
+      if (cand >= r.mMinimum - 1.0 && cand <= r.mMaximum + 1.0) {
+        rates.push_back(cand);
+        break;
+      }
+    }
+  }
+  if (rates.empty()) {
+    rates.push_back(static_cast<int>(getDeviceNominalSampleRate(devId)));
+  }
+  return rates;
+}
+
+void trySetDeviceSampleRate(AudioDeviceID devId, Float64 targetRate) {
+  if (devId == kAudioObjectUnknown || targetRate <= 8000.0) return;
+  AudioObjectPropertyAddress addr{
+      kAudioDevicePropertyNominalSampleRate,
+      kAudioObjectPropertyScopeGlobal,
+      kAudioObjectPropertyElementMain,
+  };
+  AudioObjectSetPropertyData(devId, &addr, 0, nullptr, sizeof(targetRate), &targetRate);
+}
+
+void trySetDeviceBufferSize(AudioDeviceID devId, UInt32 frames) {
+  if (devId == kAudioObjectUnknown || frames < 64) return;
+  AudioObjectPropertyAddress addr{
+      kAudioDevicePropertyBufferFrameSize,
+      kAudioObjectPropertyScopeGlobal,
+      kAudioObjectPropertyElementMain,
+  };
+  AudioObjectSetPropertyData(devId, &addr, 0, nullptr, sizeof(frames), &frames);
+}
+
 // Returns AVAuthorizationStatus: 0=NotDetermined, 1=Restricted, 2=Denied, 3=Authorized, -1=Unknown
 int getMacMicAuthStatus() {
   static void* avHandle = dlopen("/System/Library/Frameworks/AVFoundation.framework/AVFoundation", RTLD_LAZY);
@@ -384,6 +453,9 @@ public:
       info.outputChannels = outCh;
       info.isDefaultInput = (id == defIn);
       info.isDefaultOutput = (id == defOut);
+      info.sampleRate = getDeviceNominalSampleRate(id);
+      info.sampleRates = getDeviceSupportedSampleRates(id);
+      info.driver = "CoreAudio";
       result.push_back(std::move(info));
     }
     return result;
@@ -394,7 +466,8 @@ public:
              const std::string& musicInputDevId,
              const std::string& monitorOutDevId,
              const std::string& streamOutDevId,
-             int bufferSize) override {
+             int bufferSize,
+             int sampleRate = 0) override {
     stop();
     engine_ = &engine;
     bufferSize_ = std::clamp(bufferSize, 64, 2048);
@@ -409,16 +482,18 @@ public:
     running_.store(true);
 
     if (monDev_ != kAudioObjectUnknown) {
-      Float64 sr = 48000.0;
-      UInt32 srSize = sizeof(sr);
-      AudioObjectPropertyAddress srAddr{
-          kAudioDevicePropertyNominalSampleRate,
-          kAudioObjectPropertyScopeGlobal,
-          kAudioObjectPropertyElementMain,
-      };
-      if (AudioObjectGetPropertyData(monDev_, &srAddr, 0, nullptr, &srSize, &sr) == noErr && sr > 8000.0) {
-        engine_->setSampleRate(static_cast<float>(sr));
+      if (sampleRate > 8000) {
+        Float64 req = static_cast<Float64>(sampleRate);
+        trySetDeviceSampleRate(monDev_, req);
+        trySetDeviceSampleRate(streamDev_, req);
+        trySetDeviceSampleRate(inDev, req);
+        trySetDeviceSampleRate(musicDev, req);
       }
+      trySetDeviceBufferSize(monDev_, static_cast<UInt32>(bufferSize_));
+      trySetDeviceBufferSize(streamDev_, static_cast<UInt32>(bufferSize_));
+
+      Float64 sr = getDeviceNominalSampleRate(monDev_);
+      engine_->setSampleRate(static_cast<float>(sr));
 
       bool micActive = micCapture_.start(inDev, sr, &running_);
       bool musicActive = musicCapture_.start(musicDev, sr, &running_);
@@ -449,8 +524,9 @@ public:
 
     stopAudioUnitsOnly();
     hwActive_ = false;
-    engine_->setSampleRate(48000.0f);
-    status_ = "DSP Clock Mode (48 kHz · Pilih Audio Device untuk Live I/O)";
+    float fallbackSr = (sampleRate > 8000) ? static_cast<float>(sampleRate) : 48000.0f;
+    engine_->setSampleRate(fallbackSr);
+    status_ = "DSP Clock Mode (" + std::to_string(static_cast<int>(fallbackSr)) + " Hz · Pilih Audio Device)";
     simThread_ = std::thread([this]() {
       const size_t frames = 512;
       std::vector<float> sL(frames), sR(frames), mL(frames), mR(frames);

@@ -106,8 +106,16 @@
   const selMonDev = document.getElementById('sel-mon-dev');
   const selStreamDev = document.getElementById('sel-stream-dev');
   const selBufSize = document.getElementById('sel-buf-size');
+  const selSampleRate = document.getElementById('sel-sample-rate');
+  const audioHwMeta = document.getElementById('audio-hw-meta');
   const refreshDevBtn = document.getElementById('refresh-dev-btn');
   const applyAudioBtn = document.getElementById('apply-audio-btn');
+  const presetSelect = document.getElementById('preset-select');
+  const savePresetBtn = document.getElementById('save-preset-btn');
+  const presetDialog = document.getElementById('preset-dialog');
+  const presetNameInput = document.getElementById('preset-name-input');
+  const presetList = document.getElementById('preset-list');
+  const confirmSavePresetBtn = document.getElementById('confirm-save-preset-btn');
   const remoteDialog = document.getElementById('remote-dialog');
   const lanList = document.getElementById('lan-list');
   const resetAllBtn = document.getElementById('reset-all-btn');
@@ -168,7 +176,7 @@
 
     ws.addEventListener('open', () => {
       wsDot.classList.add('online');
-      setReadout('Terhubung ke StudioStream DSP Engine');
+      setReadout('Terhubung ke DM Audio DSP Engine');
     });
 
     ws.addEventListener('close', () => {
@@ -279,6 +287,114 @@
       ? `${dispMeters.duckDb.toFixed(1)} dB`
       : g.autoDuckEnabled ? 'ARM' : 'OFF';
     duckDbBadge.textContent = duckVal;
+    renderUserPresets();
+  }
+
+  function renderUserPresets() {
+    if (!appState || !presetSelect) return;
+    const presets = Array.isArray(appState.userPresets) ? appState.userPresets : [];
+    const activeId = appState.activeSceneId || '';
+
+    presetSelect.innerHTML = '';
+    const headOpt = document.createElement('option');
+    headOpt.value = '';
+    headOpt.textContent = presets.length ? `Preset User (${presets.length})` : 'Preset User...';
+    presetSelect.appendChild(headOpt);
+
+    presets.forEach((p) => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name;
+      if (p.id === activeId) opt.selected = true;
+      presetSelect.appendChild(opt);
+    });
+
+    if (!presetList) return;
+    presetList.innerHTML = '';
+    if (presets.length === 0) {
+      const li = document.createElement('li');
+      li.style.color = '#94a3b8';
+      li.textContent = 'Belum ada preset tersimpan. Ketik nama di atas lalu klik Simpan Preset.';
+      presetList.appendChild(li);
+      return;
+    }
+
+    presets.forEach((p) => {
+      const li = document.createElement('li');
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = p.name + (p.id === activeId ? ' (Aktif)' : '');
+
+      const actions = document.createElement('div');
+      actions.className = 'dsp-pill-group';
+
+      const loadBtn = document.createElement('button');
+      loadBtn.type = 'button';
+      loadBtn.className = 'tb-btn tb-primary';
+      loadBtn.textContent = 'Pakai';
+      loadBtn.addEventListener('click', () => {
+        sendWs({ type: 'recall_preset', presetId: p.id });
+        presetDialog?.close();
+        setReadout(`Preset dimuat: ${p.name}`);
+      });
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'tb-btn tb-danger';
+      delBtn.textContent = 'Hapus';
+      delBtn.addEventListener('click', () => {
+        sendWs({ type: 'delete_preset', presetId: p.id });
+        setReadout(`Preset dihapus: ${p.name}`);
+      });
+
+      actions.appendChild(loadBtn);
+      actions.appendChild(delBtn);
+      li.appendChild(nameSpan);
+      li.appendChild(actions);
+      presetList.appendChild(li);
+    });
+  }
+
+  function updateAudioHardwareMeta() {
+    if (!audioHwMeta || !selSampleRate) return;
+    const findDev = (id, isIn) => {
+      if (!id || id === 'default') {
+        return devices.find((d) => (isIn ? d.defIn : d.defOut)) || devices[0];
+      }
+      return devices.find((d) => d.id === id);
+    };
+
+    const inDev = findDev(selInputDev.value, true);
+    const outDev = findDev(selMonDev.value, false);
+    const refDev = inDev || outDev;
+    const rateSet = new Set([44100, 48000, 88200, 96000]);
+    if (inDev?.sampleRates) inDev.sampleRates.forEach((r) => rateSet.add(r));
+    if (outDev?.sampleRates) outDev.sampleRates.forEach((r) => rateSet.add(r));
+
+    const prevSr = selSampleRate.value || String(appState?.audioConfig?.sampleRate || 0);
+    selSampleRate.innerHTML = '';
+    const autoOpt = document.createElement('option');
+    autoOpt.value = '0';
+    const liveSr = Math.round(audioStatus?.sampleRate || refDev?.sampleRate || 48000);
+    autoOpt.textContent = `Auto (Ikuti Device · ${liveSr} Hz)`;
+    selSampleRate.appendChild(autoOpt);
+
+    Array.from(rateSet)
+      .sort((a, b) => a - b)
+      .forEach((rate) => {
+        const opt = document.createElement('option');
+        opt.value = String(rate);
+        const inOk = !inDev?.sampleRates?.length || inDev.sampleRates.includes(rate);
+        const outOk = !outDev?.sampleRates?.length || outDev.sampleRates.includes(rate);
+        const tag = inOk && outOk ? ' · Didukung Hardware' : '';
+        opt.textContent = `${rate} Hz${tag}`;
+        selSampleRate.appendChild(opt);
+      });
+    selSampleRate.value = Array.from(selSampleRate.options).some((o) => o.value === prevSr) ? prevSr : '0';
+
+    const drv = refDev?.driver || 'CoreAudio/WASAPI';
+    const inRatesText = inDev?.sampleRates?.length ? `${inDev.sampleRates.join('/')} Hz` : `${inDev?.sampleRate || liveSr} Hz`;
+    const outRatesText = outDev?.sampleRates?.length ? `${outDev.sampleRates.join('/')} Hz` : `${outDev?.sampleRate || liveSr} Hz`;
+    audioHwMeta.textContent = `Driver: ${drv} · Aktif: ${liveSr} Hz | Mic: ${inDev?.name || '-'} (${inRatesText}) | Monitor: ${outDev?.name || '-'} (${outRatesText})`;
   }
 
   function shortDeviceName(id, fallback) {
@@ -303,7 +419,8 @@
       for (const dev of list) {
         const opt = document.createElement('option');
         opt.value = dev.id;
-        opt.textContent = `${dev.name} (${dev.in}in/${dev.out}out)`;
+        const srTag = dev.sampleRate ? ` · ${Math.round(dev.sampleRate)}Hz` : '';
+        opt.textContent = `${dev.name} (${dev.in}in/${dev.out}out${srTag})`;
         if (dev.id === prev) opt.selected = true;
         sel.appendChild(opt);
       }
@@ -314,6 +431,10 @@
     fill(selMonDev, outputs, cfg.monitorOutDevId, 'Default Speakers / Headphones');
     fill(selStreamDev, outputs, cfg.streamOutDevId, 'Virtual Cable (OBS / TikTok Live)');
     if (cfg.bufferSize) selBufSize.value = String(cfg.bufferSize);
+    if (selSampleRate && cfg.sampleRate !== undefined) {
+      selSampleRate.value = String(cfg.sampleRate || 0);
+    }
+    updateAudioHardwareMeta();
   }
 
   function renderLanList() {
@@ -1082,7 +1203,7 @@
       ctx.fillStyle = '#94a3b8';
       ctx.font = '600 15px -apple-system, BlinkMacSystemFont, Inter, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('Menghubungkan ke StudioStream DSP Engine...', LOGICAL_W / 2, LOGICAL_H / 2);
+      ctx.fillText('Menghubungkan ke DM Audio DSP Engine...', LOGICAL_W / 2, LOGICAL_H / 2);
       return;
     }
 
@@ -1530,7 +1651,8 @@
     ctx.fillText('AUDIO I/O PATCH', rx + 10, 31);
     ctx.textAlign = 'right';
     ctx.fillStyle = '#38bdf8';
-    ctx.fillText('SETUP ⚙', rx + rw - 10, 31);
+    const srKhz = ((audioStatus?.sampleRate || 48000) / 1000).toFixed(1).replace('.0', '');
+    ctx.fillText(`${srKhz}kHz · SETUP ⚙`, rx + rw - 10, 31);
 
     const cfg = appState.audioConfig || {};
     const micName = shortDeviceName(cfg.inputDevId, 'Default Mic');
@@ -1550,11 +1672,11 @@
     // Brand Logo + Auto-Duck Card (Phantom +48V aesthetic)
     ctx.textAlign = 'left';
     ctx.fillStyle = '#e2e8f0';
-    ctx.font = '800 22px -apple-system, BlinkMacSystemFont, Inter, sans-serif';
-    ctx.fillText('DM12', rx + 8, 118);
+    ctx.font = '800 20px -apple-system, BlinkMacSystemFont, Inter, sans-serif';
+    ctx.fillText('DM Audio', rx + 8, 118);
     ctx.fillStyle = '#38bdf8';
     ctx.font = '700 8.5px -apple-system, BlinkMacSystemFont, Inter, sans-serif';
-    ctx.fillText('STREAM CONSOLE', rx + 8, 134);
+    ctx.fillText('DIGITAL MIXER', rx + 8, 134);
 
     const duckBoxX = rx + 126;
     const duckBoxW = rw - 126;
@@ -2194,7 +2316,35 @@
 
   audioSetupBtn.addEventListener('click', () => {
     sendWs({ type: 'refresh_devices' });
+    updateAudioHardwareMeta();
     audioDialog.showModal();
+  });
+
+  selInputDev.addEventListener('change', updateAudioHardwareMeta);
+  selMonDev.addEventListener('change', updateAudioHardwareMeta);
+
+  presetSelect?.addEventListener('change', () => {
+    const id = presetSelect.value;
+    if (!id) return;
+    sendWs({ type: 'recall_preset', presetId: id });
+    const p = (appState?.userPresets || []).find((x) => x.id === id);
+    setReadout(`Preset dimuat: ${p?.name || id}`);
+  });
+
+  savePresetBtn?.addEventListener('click', () => {
+    renderUserPresets();
+    if (presetNameInput) presetNameInput.value = '';
+    presetDialog?.showModal();
+    presetNameInput?.focus();
+  });
+
+  confirmSavePresetBtn?.addEventListener('click', () => {
+    const name = (presetNameInput?.value || '').trim();
+    if (!name) return;
+    sendWs({ type: 'save_preset', name });
+    if (presetNameInput) presetNameInput.value = '';
+    presetDialog?.close();
+    setReadout(`Preset disimpan: ${name}`);
   });
 
   remoteInfoBtn.addEventListener('click', () => {
@@ -2220,6 +2370,7 @@
       monitorOutDevId: selMonDev.value,
       streamOutDevId: selStreamDev.value,
       bufferSize: Number(selBufSize.value || 256),
+      sampleRate: Number(selSampleRate?.value || 0),
     };
     sendWs({ type: 'audio_config', config });
     audioDialog.close();

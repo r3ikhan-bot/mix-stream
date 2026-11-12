@@ -53,7 +53,7 @@ async function main() {
     const htmlRes = await fetch(`${BASE_URL}/`);
     assert.equal(htmlRes.status, 200);
     const html = await htmlRes.text();
-    assert.ok(html.includes('MIDAS') || html.includes('StudioStream'), 'Expected console title in index.html');
+    assert.ok(html.includes('DM Audio') || html.includes('MIDAS') || html.includes('StudioStream'), 'Expected console title in index.html');
 
     const devRes = await fetch(`${BASE_URL}/api/devices`);
     assert.equal(devRes.status, 200);

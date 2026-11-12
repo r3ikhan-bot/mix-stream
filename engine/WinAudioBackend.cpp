@@ -153,6 +153,42 @@ public:
         info.outputChannels = isInput ? 0 : 2;
         info.isDefaultInput = isInput && (id == defId);
         info.isDefaultOutput = !isInput && (id == defId);
+        info.driver = "WASAPI";
+
+        IAudioClient* probeClient = nullptr;
+        if (SUCCEEDED(dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&probeClient))) &&
+            probeClient) {
+          WAVEFORMATEX* mixFmt = nullptr;
+          if (SUCCEEDED(probeClient->GetMixFormat(&mixFmt)) && mixFmt) {
+            info.sampleRate = static_cast<double>(mixFmt->nSamplesPerSec);
+            if (isInput) info.inputChannels = std::max<int>(1, static_cast<int>(mixFmt->nChannels));
+            else info.outputChannels = std::max<int>(1, static_cast<int>(mixFmt->nChannels));
+
+            const int candidates[] = {44100, 48000, 88200, 96000};
+            std::vector<uint8_t> fmtCopy(sizeof(WAVEFORMATEX) + mixFmt->cbSize);
+            for (int cand : candidates) {
+              std::memcpy(fmtCopy.data(), mixFmt, fmtCopy.size());
+              auto* testFmt = reinterpret_cast<WAVEFORMATEX*>(fmtCopy.data());
+              testFmt->nSamplesPerSec = static_cast<DWORD>(cand);
+              testFmt->nAvgBytesPerSec = testFmt->nSamplesPerSec * testFmt->nBlockAlign;
+              WAVEFORMATEX* closest = nullptr;
+              HRESULT sup = probeClient->IsFormatSupported(AUDCLNT_SHAREMODE_SHARED, testFmt, &closest);
+              if (closest) CoTaskMemFree(closest);
+              if (sup == S_OK || static_cast<int>(mixFmt->nSamplesPerSec) == cand) {
+                info.sampleRates.push_back(cand);
+              }
+            }
+            if (info.sampleRates.empty()) {
+              info.sampleRates.push_back(static_cast<int>(mixFmt->nSamplesPerSec));
+            }
+            CoTaskMemFree(mixFmt);
+          }
+          probeClient->Release();
+        }
+        if (info.sampleRates.empty()) {
+          info.sampleRates.push_back(48000);
+        }
+
         list.push_back(std::move(info));
         dev->Release();
       }
@@ -170,14 +206,16 @@ public:
              const std::string& musicInputDevId,
              const std::string& monitorOutDevId,
              const std::string& streamOutDevId,
-             int bufferSize) override {
+             int bufferSize,
+             int sampleRate = 0) override {
     stop();
     engine_ = &engine;
-    engine_->setSampleRate(48000.0f);
+    float initialSr = (sampleRate > 8000) ? static_cast<float>(sampleRate) : 48000.0f;
+    engine_->setSampleRate(initialSr);
     running_.store(true);
-    status_ = "WASAPI Live (48000 Hz)";
+    status_ = "WASAPI Live (" + std::to_string(static_cast<int>(initialSr)) + " Hz)";
 
-    worker_ = std::thread([this, inputDevId, musicInputDevId, monitorOutDevId, streamOutDevId, bufferSize]() {
+    worker_ = std::thread([this, inputDevId, musicInputDevId, monitorOutDevId, streamOutDevId, bufferSize, sampleRate]() {
       CoInitializeEx(nullptr, COINIT_MULTITHREADED);
       IMMDeviceEnumerator* enumerator = nullptr;
       CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
@@ -202,13 +240,24 @@ public:
         WAVEFORMATEX* mixFmt = nullptr;
         (*outClient)->GetMixFormat(&mixFmt);
         if (mixFmt) {
-          engine_->setSampleRate(static_cast<float>(mixFmt->nSamplesPerSec));
-          *outChannels = std::max<UINT32>(1, mixFmt->nChannels);
+          if (sampleRate > 8000 && static_cast<int>(mixFmt->nSamplesPerSec) != sampleRate) {
+            mixFmt->nSamplesPerSec = static_cast<DWORD>(sampleRate);
+            mixFmt->nAvgBytesPerSec = mixFmt->nSamplesPerSec * mixFmt->nBlockAlign;
+          }
+          WAVEFORMATEX* closest = nullptr;
+          HRESULT sup = (*outClient)->IsFormatSupported(AUDCLNT_SHAREMODE_SHARED, mixFmt, &closest);
+          WAVEFORMATEX* initFmt = (sup == S_FALSE && closest) ? closest : mixFmt;
+          engine_->setSampleRate(static_cast<float>(initFmt->nSamplesPerSec));
+          *outChannels = std::max<UINT32>(1, initFmt->nChannels);
+          status_ = "WASAPI Live (" + std::to_string(initFmt->nSamplesPerSec) + " Hz)";
+          REFERENCE_TIME dur = 200000;
+          hr = (*outClient)->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, dur, 0, initFmt, nullptr);
+          if (closest) CoTaskMemFree(closest);
+          CoTaskMemFree(mixFmt);
+          if (FAILED(hr)) return false;
+        } else {
+          return false;
         }
-        REFERENCE_TIME dur = 200000;
-        hr = (*outClient)->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, dur, 0, mixFmt, nullptr);
-        if (mixFmt) CoTaskMemFree(mixFmt);
-        if (FAILED(hr)) return false;
 
         (*outClient)->GetBufferSize(outFrames);
         (*outClient)->GetService(__uuidof(IAudioRenderClient), reinterpret_cast<void**>(outRender));

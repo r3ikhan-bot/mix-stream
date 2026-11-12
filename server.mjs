@@ -225,7 +225,7 @@ class AudioEngineProcess {
 
   startAudio(cfg) {
     this.sendCmd(
-      `START\t${cfg.inputDevId || 'default'}\t${cfg.musicInputDevId || 'none'}\t${cfg.monitorOutDevId || 'default'}\t${cfg.streamOutDevId || 'none'}\t${cfg.bufferSize || 256}`,
+      `START\t${cfg.inputDevId || 'default'}\t${cfg.musicInputDevId || 'none'}\t${cfg.monitorOutDevId || 'default'}\t${cfg.streamOutDevId || 'none'}\t${cfg.bufferSize || 256}\t${cfg.sampleRate || 0}`,
     );
   }
 
@@ -308,6 +308,35 @@ function getLanUrls(port) {
   return urls;
 }
 
+const LEGACY_CHANNEL_NAMES = new Map([
+  ['Host Mic', 'Audio 1'],
+  ['Co-Host', 'Audio 2'],
+  ['Line / Inst', 'Audio 3'],
+  ['Guest Call', 'Audio 4'],
+  ['Game / TTLS', 'Audio 5'],
+  ['Browser', 'Audio 6'],
+  ['Music / BGM', 'BGM / Music'],
+]);
+
+function normalizeSourceMode(val, fallback) {
+  if (typeof val === 'number' && Number.isFinite(val)) return val;
+  if (val === 'mic' || val === 'line') return 0;
+  if (val === 'bgm') return 1;
+  if (val === 'loop') return 2;
+  if (val === 'pads') return 3;
+  const parsed = Number(val);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeDuckRole(val, fallback) {
+  if (typeof val === 'number' && Number.isFinite(val)) return val;
+  if (val === 'none') return 0;
+  if (val === 'host') return 1;
+  if (val === 'ducked') return 2;
+  const parsed = Number(val);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function loadState() {
   const defaults = createDefaultState();
   try {
@@ -322,11 +351,19 @@ function loadState() {
       audioConfig: { ...defaults.audioConfig, ...(saved.audioConfig || {}) },
       bgm: { ...defaults.bgm, ...(saved.bgm || {}) },
       globals: { ...defaults.globals, ...(saved.globals || {}) },
-      channels: defaults.channels.map((defCh, i) => ({
-        ...defCh,
-        ...(saved.channels[i] || {}),
-        sourceMode: saved.channels[i]?.sourceMode ?? defCh.sourceMode,
-      })),
+      userPresets: Array.isArray(saved.userPresets) ? saved.userPresets : [],
+      channels: defaults.channels.map((defCh, i) => {
+        const sCh = saved.channels[i] || {};
+        const migratedName = LEGACY_CHANNEL_NAMES.get(sCh.name) || sCh.name || defCh.name;
+        return {
+          ...defCh,
+          ...sCh,
+          name: migratedName,
+          sourceMode: normalizeSourceMode(sCh.sourceMode, defCh.sourceMode),
+          duckRole: normalizeDuckRole(sCh.duckRole, defCh.duckRole),
+          stereoInput: typeof sCh.stereoInput === 'boolean' ? sCh.stereoInput : defCh.stereoInput,
+        };
+      }),
     };
   } catch {
     return defaults;
@@ -529,6 +566,54 @@ server.on('upgrade', (req, socket) => {
           wsHub.broadcast({ type: 'full_state', state: appState });
           break;
         }
+        case 'save_preset': {
+          const rawName = String(msg.name || '').trim().slice(0, 28);
+          if (!rawName) return;
+          if (!Array.isArray(appState.userPresets)) appState.userPresets = [];
+          const id = `preset_${rawName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || Date.now()}`;
+          const snapshot = {
+            id,
+            name: rawName,
+            globals: { ...appState.globals },
+            channels: appState.channels.map((c) => ({ ...c })),
+          };
+          const existingIdx = appState.userPresets.findIndex((p) => p.id === id);
+          if (existingIdx >= 0) appState.userPresets[existingIdx] = snapshot;
+          else appState.userPresets.push(snapshot);
+          appState.activeSceneId = id;
+          scheduleSave(appState);
+          wsHub.broadcast({ type: 'full_state', state: appState });
+          break;
+        }
+        case 'recall_preset': {
+          const preset = (appState.userPresets || []).find((p) => p.id === msg.presetId);
+          if (!preset) return;
+          appState.activeSceneId = preset.id;
+          appState.globals = {
+            ...appState.globals,
+            ...(preset.globals || {}),
+            bgmPlaying: appState.globals.bgmPlaying,
+            bgmLoop: appState.globals.bgmLoop,
+          };
+          preset.channels.forEach((pCh, idx) => {
+            if (appState.channels[idx]) {
+              appState.channels[idx] = { ...appState.channels[idx], ...pCh, index: idx };
+            }
+          });
+          engine.syncAll(appState);
+          scheduleSave(appState);
+          wsHub.broadcast({ type: 'full_state', state: appState });
+          break;
+        }
+        case 'delete_preset': {
+          appState.userPresets = (appState.userPresets || []).filter((p) => p.id !== msg.presetId);
+          if (appState.activeSceneId === msg.presetId) {
+            appState.activeSceneId = 'live-talk';
+          }
+          scheduleSave(appState);
+          wsHub.broadcast({ type: 'full_state', state: appState });
+          break;
+        }
         case 'audio_config': {
           appState.audioConfig = { ...appState.audioConfig, ...msg.config };
           engine.startAudio(appState.audioConfig);
@@ -592,7 +677,7 @@ server.on('error', (err) => {
 
 server.listen(PORT, HOST, () => {
   console.log('\n===============================================================');
-  console.log(' StudioStream Mixer — Fender Studio One–style OBS/TTLS Console');
+  console.log(' DM Audio — Digital Mixer Console (OBS / TikTok Live / Remote)');
   console.log('===============================================================');
   console.log(` Desktop UI   : http://127.0.0.1:${PORT}`);
   const lan = getLanUrls(PORT);

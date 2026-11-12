@@ -69,7 +69,15 @@ int main() {
          << "\",\"in\":" << d.inputChannels
          << ",\"out\":" << d.outputChannels
          << ",\"defIn\":" << (d.isDefaultInput ? "true" : "false")
-         << ",\"defOut\":" << (d.isDefaultOutput ? "true" : "false") << "}";
+         << ",\"defOut\":" << (d.isDefaultOutput ? "true" : "false")
+         << ",\"sampleRate\":" << static_cast<int>(d.sampleRate)
+         << ",\"driver\":\"" << jsonEscape(d.driver) << "\""
+         << ",\"sampleRates\":[";
+      for (size_t r = 0; r < d.sampleRates.size(); ++r) {
+        if (r > 0) os << ",";
+        os << d.sampleRates[r];
+      }
+      os << "]}";
     }
     os << "]";
     emitLine(os.str());
@@ -131,8 +139,12 @@ int main() {
       emitDevices();
     } else if (cmd == "START" && parts.size() >= 6) {
       int buf = 256;
+      int sr = 0;
       try { buf = std::stoi(parts[5]); } catch (...) {}
-      backend->start(engine, parts[1], parts[2], parts[3], parts[4], buf);
+      if (parts.size() >= 7) {
+        try { sr = std::stoi(parts[6]); } catch (...) {}
+      }
+      backend->start(engine, parts[1], parts[2], parts[3], parts[4], buf, sr);
       emitStatus();
     } else if (cmd == "START" && parts.size() >= 5) {
       int buf = 256;
