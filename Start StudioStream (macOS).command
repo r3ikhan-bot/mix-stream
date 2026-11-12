@@ -19,7 +19,7 @@ if [ -z "$NODE_BIN" ]; then
 fi
 
 echo "=================================================="
-echo "  StudioStream Mixer (Fender Studio One Edition)"
+echo "  DM Audio — Digital Mixer Console"
 echo "  Memulai Audio Engine & Desktop Console..."
 echo "=================================================="
 

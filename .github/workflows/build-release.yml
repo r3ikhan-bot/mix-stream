@@ -1,4 +1,4 @@
-name: Build & Release StudioStream Mixer
+name: Build & Release DM Audio
 
 on:
   push:
@@ -28,11 +28,13 @@ jobs:
       - name: Setup MSVC Compiler
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Compile Windows WASAPI Audio Engine
+      - name: Compile Windows WASAPI Audio Engine & Launcher
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path build | Out-Null
           cl /std:c++17 /O2 /EHsc /W3 engine\main.cpp engine\WinAudioBackend.cpp /Fe:build\studio-stream-engine.exe ole32.lib uuid.lib avrt.lib mmdevapi.lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cl /std:c++17 /O2 /EHsc /W3 /DUNICODE /D_UNICODE desktop\WinLauncher.cpp /Fe:"build\DM Audio.exe" /link /SUBSYSTEM:WINDOWS ws2_32.lib user32.lib shell32.lib
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run Smoke Test on Windows
@@ -47,9 +49,10 @@ jobs:
       - name: Stage Portable Windows Bundle
         shell: pwsh
         run: |
-          $stage = "dist\StudioStream-Mixer-Windows-x64"
+          $stage = "dist\DM-Audio-Windows-x64"
           New-Item -ItemType Directory -Force -Path "$stage\build", "$stage\runtime", "$stage\samples" | Out-Null
           Copy-Item "build\studio-stream-engine.exe" "$stage\build\studio-stream-engine.exe"
+          Copy-Item "build\DM Audio.exe" "$stage\DM Audio.exe"
           "prebuilt" | Set-Content -Path "$stage\build\.prebuilt" -Encoding UTF8
 
           $nodeExe = (Get-Command node).Source
@@ -79,13 +82,13 @@ jobs:
             Remove-Item -ErrorAction SilentlyContinue $env:STATE_FILE
           }
 
-          Compress-Archive -Path $stage -DestinationPath "dist\StudioStream-Mixer-Windows-x64.zip" -Force
+          Compress-Archive -Path $stage -DestinationPath "dist\DM-Audio-Windows-x64.zip" -Force
 
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: StudioStream-Mixer-Windows-x64
-          path: dist/StudioStream-Mixer-Windows-x64.zip
+          name: DM-Audio-Windows-x64
+          path: dist/DM-Audio-Windows-x64.zip
 
   build-macos:
     name: Build macOS Portable
@@ -130,7 +133,7 @@ jobs:
 
       - name: Stage Portable macOS Bundle
         run: |
-          STAGE="dist/StudioStream-Mixer-macOS"
+          STAGE="dist/DM-Audio-macOS"
           mkdir -p "$STAGE/build" "$STAGE/runtime" "$STAGE/samples"
           cp build/studio-stream-engine build/StudioStreamDesktop "$STAGE/build/"
           echo "prebuilt" > "$STAGE/build/.prebuilt"
@@ -142,13 +145,13 @@ jobs:
           cp server.mjs package.json "Start StudioStream (macOS).command" README.md "$STAGE/"
           chmod +x "$STAGE/Start StudioStream (macOS).command"
 
-          ditto -c -k --sequesterRsrc --keepParent "$STAGE" dist/StudioStream-Mixer-macOS.zip
+          ditto -c -k --sequesterRsrc --keepParent "$STAGE" dist/DM-Audio-macOS.zip
 
       - name: Upload macOS Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: StudioStream-Mixer-macOS
-          path: dist/StudioStream-Mixer-macOS.zip
+          name: DM-Audio-macOS
+          path: dist/DM-Audio-macOS.zip
 
   publish-release:
     name: Publish GitHub Release
@@ -166,5 +169,5 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            artifacts/StudioStream-Mixer-Windows-x64/StudioStream-Mixer-Windows-x64.zip
-            artifacts/StudioStream-Mixer-macOS/StudioStream-Mixer-macOS.zip
+            artifacts/DM-Audio-Windows-x64/DM-Audio-Windows-x64.zip
+            artifacts/DM-Audio-macOS/DM-Audio-macOS.zip

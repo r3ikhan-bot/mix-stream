@@ -39,7 +39,7 @@ if not exist "build\studio-stream-engine.exe" (
 )
 
 echo ==================================================
-echo   StudioStream Mixer ^(Fender Studio One Edition^)
+echo   DM Audio — Digital Mixer Console
 echo   Menjalankan Server ^& Membuka Console UI...
 echo ==================================================
 
