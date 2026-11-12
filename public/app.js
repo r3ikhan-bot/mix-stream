@@ -116,6 +116,7 @@
   let draftAudioConfig = {
     inputDevId: '',
     musicInputDevId: '',
+    inputDeviceIds: [],
     monitorOutDevId: '',
     streamOutDevId: '',
     bufferSize: 256,
@@ -417,11 +418,20 @@
     if (hwSettingsChain) {
       hwSettingsChain.textContent = uniqueChain.length ? uniqueChain.join(' + ') : 'Default System Audio';
     }
+    const poolIds = Array.isArray(draftAudioConfig.inputDeviceIds)
+      ? draftAudioConfig.inputDeviceIds.filter((x) => x && x !== 'none').slice(0, 4)
+      : [];
+    const poolDevices = poolIds.map((id) => findDeviceForRole(id, true)).filter(Boolean);
+
     if (hwInputsInUse) {
-      const inParts = [];
-      if (inDev) inParts.push(`Mic: ${inDev.name} (${inDev.in} in)`);
-      if (loopDev) inParts.push(`Loop: ${loopDev.name} (${loopDev.in} in)`);
-      hwInputsInUse.textContent = inParts.length ? inParts.join(' · ') : 'Default System Mic';
+      if (poolDevices.length) {
+        hwInputsInUse.textContent = poolDevices.map((d, idx) => `IN ${idx + 1}: ${d.name}`).join(' · ');
+      } else {
+        const inParts = [];
+        if (inDev) inParts.push(`Mic: ${inDev.name} (${inDev.in} in)`);
+        if (loopDev) inParts.push(`Loop: ${loopDev.name} (${loopDev.in} in)`);
+        hwInputsInUse.textContent = inParts.length ? inParts.join(' · ') : 'Default System Mic';
+      }
     }
     if (hwOutputsInUse) {
       const outParts = [];
@@ -430,24 +440,73 @@
       hwOutputsInUse.textContent = outParts.length ? outParts.join(' · ') : 'Default Speakers / Headphones';
     }
 
-    const totalIn = (inDev?.in || 0) + (loopDev && loopDev.id !== inDev?.id ? loopDev.in || 0 : 0);
+    const totalIn = poolDevices.length
+      ? poolDevices.reduce((sum, d) => sum + (d.in || 0), 0)
+      : (inDev?.in || 0) + (loopDev && loopDev.id !== inDev?.id ? loopDev.in || 0 : 0);
     const totalOut = (outDev?.out || 0) + (streamDev && streamDev.id !== outDev?.id ? streamDev.out || 0 : 0);
     if (hwSummaryBar) {
-      hwSummaryBar.textContent = `${devices.length} devices · Active I/O: ${totalIn} in / ${totalOut} out · Mic: ${inDev?.name || 'Auto'} · Stream: ${streamDev?.name || 'None'}`;
+      hwSummaryBar.textContent = `${devices.length} devices · Pool: ${poolDevices.length} input · ${totalIn} in / ${totalOut} out · Stream: ${streamDev?.name || 'None'} · Mon: ${outDev?.name || 'Default'}`;
     }
 
     if (hwRoutingMap) {
       const chs = appState?.channels || [];
-      const rows = [
-        { ch: `${chs[0]?.name || 'Audio 1'} (Ch 1)`, dest: `${inDev?.name || 'Default Mic'} · In 1 (${chs[0]?.stereoInput ? 'Stereo' : 'Mono'})` },
-        { ch: `${chs[1]?.name || 'Audio 2'} (Ch 2)`, dest: `${inDev?.name || 'Default Mic'} · In 2 (${chs[1]?.stereoInput ? 'Stereo' : 'Mono'})` },
-        { ch: `${chs[2]?.name || 'Audio 3'} – ${chs[5]?.name || 'Audio 6'}`, dest: `${loopDev?.name || 'Internal / Loopback'} (Stereo)` },
-        { ch: `${chs[6]?.name || 'BGM / Music'} & Soundboard`, dest: 'Internal WAV / Sample Engine' },
-        { ch: 'STREAM Bus (OBS)', dest: streamDev?.name || 'Belum dipilih (pilih role OBS)' },
+      hwRoutingMap.innerHTML = '';
+      for (let i = 0; i < 6; i++) {
+        const ch = chs[i];
+        if (!ch) continue;
+        const card = document.createElement('div');
+        card.className = 'hw-route-card';
+        const title = document.createElement('div');
+        title.className = 'hw-route-ch';
+        title.textContent = `${ch.name} (Ch ${i + 1})`;
+        card.appendChild(title);
+
+        const ctrls = document.createElement('div');
+        ctrls.className = 'hw-route-controls';
+
+        const slotSel = document.createElement('select');
+        slotSel.className = 'hw-route-select';
+        const autoOpt = document.createElement('option');
+        autoOpt.value = '-1';
+        autoOpt.textContent = 'Auto (Default)';
+        slotSel.appendChild(autoOpt);
+        for (let s = 0; s < 4; s++) {
+          const sDev = poolIds[s] ? findDeviceForRole(poolIds[s], true) : null;
+          const opt = document.createElement('option');
+          opt.value = String(s);
+          opt.textContent = sDev ? `IN ${s + 1}: ${sDev.name}` : `IN ${s + 1} (Kosong)`;
+          if (Number(ch.sourceSlot ?? -1) === s) opt.selected = true;
+          slotSel.appendChild(opt);
+        }
+        slotSel.addEventListener('change', () => {
+          sendChParam(i, 'sourceSlot', Number(slotSel.value));
+        });
+
+        const modeSel = document.createElement('select');
+        modeSel.className = 'hw-route-select';
+        modeSel.style.maxWidth = '84px';
+        [['0', 'Mono'], ['1', 'Stereo']].forEach(([v, lbl]) => {
+          const o = document.createElement('option');
+          o.value = v;
+          o.textContent = lbl;
+          if ((ch.stereoInput ? '1' : '0') === v) o.selected = true;
+          modeSel.appendChild(o);
+        });
+        modeSel.addEventListener('change', () => {
+          sendChParam(i, 'stereoInput', modeSel.value === '1');
+        });
+
+        ctrls.appendChild(slotSel);
+        ctrls.appendChild(modeSel);
+        card.appendChild(ctrls);
+        hwRoutingMap.appendChild(card);
+      }
+
+      const busRows = [
+        { ch: 'STREAM Bus (OBS)', dest: streamDev?.name || 'Belum dipilih (klik OBS di tab Hardware)' },
         { ch: 'MONITOR Bus (Phones)', dest: outDev?.name || 'Default Speakers / Headphones' },
       ];
-      hwRoutingMap.innerHTML = '';
-      rows.forEach((r) => {
+      busRows.forEach((r) => {
         const card = document.createElement('div');
         card.className = 'hw-route-card';
         card.innerHTML = `<div class="hw-route-ch"></div><div class="hw-route-dest"></div>`;
@@ -475,14 +534,51 @@
     }
 
     devices.forEach((dev) => {
+      const poolIdx = (draftAudioConfig.inputDeviceIds || []).indexOf(dev.id);
+      const inPool = poolIdx >= 0;
       const isMic = draftAudioConfig.inputDevId === dev.id;
       const isLoop = draftAudioConfig.musicInputDevId === dev.id;
       const isObs = draftAudioConfig.streamOutDevId === dev.id;
       const isMon = draftAudioConfig.monitorOutDevId === dev.id;
-      const hasRole = isMic || isLoop || isObs || isMon;
+      const hasRole = inPool || isMic || isLoop || isObs || isMon;
 
       const row = document.createElement('div');
       row.className = `hw-device-row${hasRole ? ' has-role' : ''}`;
+
+      if (dev.in > 0) {
+        const checkWrap = document.createElement('div');
+        checkWrap.className = 'hw-check-wrap';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'hw-check';
+        cb.checked = inPool;
+        cb.title = 'Centang untuk masukkan input ini ke Device Pool (maks 4)';
+        cb.addEventListener('change', () => {
+          const pool = Array.isArray(draftAudioConfig.inputDeviceIds)
+            ? [...draftAudioConfig.inputDeviceIds]
+            : [];
+          const idx = pool.indexOf(dev.id);
+          if (cb.checked && idx < 0) {
+            if (pool.length >= 4) pool.shift();
+            pool.push(dev.id);
+          } else if (!cb.checked && idx >= 0) {
+            pool.splice(idx, 1);
+          }
+          draftAudioConfig.inputDeviceIds = pool;
+          draftAudioConfig.inputDevId = pool[0] || '';
+          draftAudioConfig.musicInputDevId = pool[1] || '';
+          renderHardwareDeviceList();
+          updateAudioHardwareMeta();
+        });
+        checkWrap.appendChild(cb);
+        if (inPool) {
+          const badge = document.createElement('span');
+          badge.className = 'hw-slot-badge';
+          badge.textContent = `IN ${poolIdx + 1}`;
+          checkWrap.appendChild(badge);
+        }
+        row.appendChild(checkWrap);
+      }
 
       const info = document.createElement('div');
       info.className = 'hw-dev-info';
@@ -557,9 +653,16 @@
 
   function populateDeviceSelects() {
     const cfg = appState?.audioConfig || {};
+    const existingPool = Array.isArray(cfg.inputDeviceIds) ? cfg.inputDeviceIds.filter((x) => x && x !== 'none') : [];
+    const fallbackPool = [];
+    if (cfg.inputDevId && cfg.inputDevId !== 'default' && cfg.inputDevId !== 'none') fallbackPool.push(cfg.inputDevId);
+    if (cfg.musicInputDevId && cfg.musicInputDevId !== 'none' && !fallbackPool.includes(cfg.musicInputDevId)) {
+      fallbackPool.push(cfg.musicInputDevId);
+    }
     draftAudioConfig = {
       inputDevId: cfg.inputDevId || '',
       musicInputDevId: cfg.musicInputDevId || '',
+      inputDeviceIds: existingPool.length ? existingPool.slice(0, 4) : fallbackPool,
       monitorOutDevId: cfg.monitorOutDevId || '',
       streamOutDevId: cfg.streamOutDevId || '',
       bufferSize: Number(cfg.bufferSize || 256),
@@ -686,6 +789,31 @@
       });
       srcRow.appendChild(srcSel);
       cardId.appendChild(srcRow);
+
+      const poolRow = document.createElement('label');
+      poolRow.className = 'dsp-row';
+      poolRow.innerHTML = `<span>Source Device (Pool)</span>`;
+      const poolSel = document.createElement('select');
+      const poolIds = Array.isArray(appState?.audioConfig?.inputDeviceIds)
+        ? appState.audioConfig.inputDeviceIds.filter((x) => x && x !== 'none')
+        : [];
+      const autoOpt = document.createElement('option');
+      autoOpt.value = '-1';
+      autoOpt.textContent = 'Auto (Ikuti Source Mode)';
+      poolSel.appendChild(autoOpt);
+      for (let s = 0; s < 4; s++) {
+        const dev = poolIds[s] ? devices.find((d) => d.id === poolIds[s]) : null;
+        const opt = document.createElement('option');
+        opt.value = String(s);
+        opt.textContent = dev ? `IN ${s + 1}: ${dev.name}` : `IN ${s + 1} (Slot Input ${s + 1})`;
+        if (Number(ch.sourceSlot ?? -1) === s) opt.selected = true;
+        poolSel.appendChild(opt);
+      }
+      poolSel.addEventListener('change', () => {
+        sendChParam(selectedChannel, 'sourceSlot', Number(poolSel.value));
+      });
+      poolRow.appendChild(poolSel);
+      cardId.appendChild(poolRow);
 
       const modeRow = document.createElement('label');
       modeRow.className = 'dsp-row';
@@ -1398,10 +1526,11 @@
       let srcActive = Number(ch.sourceMode) === 0;
       if (i < 6) {
         const slot = (ch.inputChannelOffset || 0) + 1;
-        const srcPrefix = Number(ch.sourceMode) === 2 ? 'LOOP' : 'HW';
+        const sSlot = Number(ch.sourceSlot ?? -1);
+        const srcPrefix = sSlot >= 0 ? `IN${sSlot + 1}` : (Number(ch.sourceMode) === 2 ? 'LOOP' : 'HW');
         const isSt = ch.stereoInput !== false;
         srcText = isSt ? `${srcPrefix} ${slot}-${slot + 1} · ST` : `${srcPrefix} ${slot} · MONO`;
-        srcActive = Number(ch.sourceMode) === 0;
+        srcActive = sSlot >= 0 || Number(ch.sourceMode) === 0;
       } else if (i === 6) {
         srcText = g.bgmPlaying ? 'BGM PLAY ▶' : 'BGM DECK ▾';
         srcActive = Boolean(g.bgmPlaying);
@@ -2514,9 +2643,13 @@
   });
 
   applyAudioBtn.addEventListener('click', () => {
+    const pool = Array.isArray(draftAudioConfig.inputDeviceIds)
+      ? draftAudioConfig.inputDeviceIds.filter((x) => x && x !== 'none').slice(0, 4)
+      : [];
     const config = {
-      inputDevId: draftAudioConfig.inputDevId || '',
-      musicInputDevId: draftAudioConfig.musicInputDevId || '',
+      inputDevId: pool[0] || draftAudioConfig.inputDevId || '',
+      musicInputDevId: pool[1] || draftAudioConfig.musicInputDevId || '',
+      inputDeviceIds: pool,
       monitorOutDevId: draftAudioConfig.monitorOutDevId || '',
       streamOutDevId: draftAudioConfig.streamOutDevId || '',
       bufferSize: Number(selBufSize?.value || draftAudioConfig.bufferSize || 256),

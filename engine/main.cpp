@@ -137,6 +137,19 @@ int main() {
       break;
     } else if (cmd == "LIST_DEVICES") {
       emitDevices();
+    } else if (cmd == "START_MULTI" && parts.size() >= 6) {
+      std::vector<std::string> inIds;
+      std::stringstream iss(parts[1]);
+      std::string tok;
+      while (std::getline(iss, tok, ',')) {
+        if (!tok.empty() && tok != "none") inIds.push_back(tok);
+      }
+      int buf = 256;
+      int sr = 0;
+      try { buf = std::stoi(parts[4]); } catch (...) {}
+      try { sr = std::stoi(parts[5]); } catch (...) {}
+      backend->startMulti(engine, inIds, parts[2], parts[3], buf, sr);
+      emitStatus();
     } else if (cmd == "START" && parts.size() >= 6) {
       int buf = 256;
       int sr = 0;
@@ -188,6 +201,7 @@ int main() {
       else if (key == "testTone") p.testTone.store(bval, std::memory_order_relaxed);
       else if (key == "inputChannelOffset") p.inputChannelOffset.store(static_cast<int>(val), std::memory_order_relaxed);
       else if (key == "stereoInput") p.stereoInput.store(bval, std::memory_order_relaxed);
+      else if (key == "sourceSlot") p.sourceSlot.store(static_cast<int>(val), std::memory_order_relaxed);
       else if (key == "sourceMode") p.sourceMode.store(static_cast<int>(val), std::memory_order_relaxed);
       else if (key == "insertA") p.insertA.store(static_cast<int>(val), std::memory_order_relaxed);
       else if (key == "insertAParam1") p.insertAParam1.store(val, std::memory_order_relaxed);

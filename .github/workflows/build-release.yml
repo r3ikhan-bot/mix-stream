@@ -32,7 +32,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path build | Out-Null
-          cl /std:c++17 /O2 /EHsc /W3 engine\main.cpp engine\WinAudioBackend.cpp /Fe:build\studio-stream-engine.exe ole32.lib uuid.lib avrt.lib mmdevapi.lib
+          cl /std:c++17 /O2 /EHsc /W3 engine\main.cpp engine\WinAudioBackend.cpp /Fe:build\studio-stream-engine.exe ole32.lib uuid.lib avrt.lib mmdevapi.lib advapi32.lib
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cl /std:c++17 /O2 /EHsc /W3 /DUNICODE /D_UNICODE desktop\WinLauncher.cpp /Fe:"build\DM Audio.exe" /link /SUBSYSTEM:WINDOWS ws2_32.lib user32.lib shell32.lib
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

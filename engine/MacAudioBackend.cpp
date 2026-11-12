@@ -468,13 +468,37 @@ public:
              const std::string& streamOutDevId,
              int bufferSize,
              int sampleRate = 0) override {
+    std::vector<std::string> inputs;
+    inputs.push_back(inputDevId);
+    if (!musicInputDevId.empty() && musicInputDevId != "none") {
+      inputs.push_back(musicInputDevId);
+    }
+    return startMulti(engine, inputs, monitorOutDevId, streamOutDevId, bufferSize, sampleRate);
+  }
+
+  bool startMulti(MixerEngine& engine,
+                  const std::vector<std::string>& inputDevIds,
+                  const std::string& monitorOutDevId,
+                  const std::string& streamOutDevId,
+                  int bufferSize,
+                  int sampleRate = 0) override {
     stop();
     engine_ = &engine;
     bufferSize_ = std::clamp(bufferSize, 64, 2048);
 
-    AudioDeviceID inDev = parseDeviceId(inputDevId, kAudioHardwarePropertyDefaultInputDevice, inputDevId == "none");
-    AudioDeviceID musicDev =
-        parseDeviceId(musicInputDevId, kAudioObjectUnknown, musicInputDevId == "none" || musicInputDevId.empty());
+    std::array<AudioDeviceID, MixerEngine::kMaxInputSlots> inDevs{};
+    inDevs.fill(kAudioObjectUnknown);
+    for (size_t s = 0; s < inputDevIds.size() && s < MixerEngine::kMaxInputSlots; ++s) {
+      const std::string& idStr = inputDevIds[s];
+      AudioObjectPropertySelector fallback =
+          (s == 0) ? kAudioHardwarePropertyDefaultInputDevice : kAudioObjectUnknown;
+      bool explicitNone = (idStr == "none") || (s > 0 && idStr.empty());
+      inDevs[s] = parseDeviceId(idStr, fallback, explicitNone);
+    }
+    if (inputDevIds.empty()) {
+      inDevs[0] = parseDeviceId("default", kAudioHardwarePropertyDefaultInputDevice, false);
+    }
+
     monDev_ = parseDeviceId(monitorOutDevId, kAudioHardwarePropertyDefaultOutputDevice, monitorOutDevId == "none");
     streamDev_ = parseDeviceId(streamOutDevId, kAudioObjectUnknown, streamOutDevId == "none" || streamOutDevId.empty());
 
@@ -486,8 +510,9 @@ public:
         Float64 req = static_cast<Float64>(sampleRate);
         trySetDeviceSampleRate(monDev_, req);
         trySetDeviceSampleRate(streamDev_, req);
-        trySetDeviceSampleRate(inDev, req);
-        trySetDeviceSampleRate(musicDev, req);
+        for (AudioDeviceID dev : inDevs) {
+          if (dev != kAudioObjectUnknown) trySetDeviceSampleRate(dev, req);
+        }
       }
       trySetDeviceBufferSize(monDev_, static_cast<UInt32>(bufferSize_));
       trySetDeviceBufferSize(streamDev_, static_cast<UInt32>(bufferSize_));
@@ -495,8 +520,10 @@ public:
       Float64 sr = getDeviceNominalSampleRate(monDev_);
       engine_->setSampleRate(static_cast<float>(sr));
 
-      bool micActive = micCapture_.start(inDev, sr, &running_);
-      bool musicActive = musicCapture_.start(musicDev, sr, &running_);
+      std::array<bool, MixerEngine::kMaxInputSlots> active{};
+      for (int s = 0; s < MixerEngine::kMaxInputSlots; ++s) {
+        active[s] = inputCaptures_[s].start(inDevs[s], sr, &running_);
+      }
 
       if (AudioDeviceCreateIOProcID(monDev_, &MacAudioBackend::outputIoProc, this, &monProcId_) == noErr) {
         if (AudioDeviceStart(monDev_, monProcId_) == noErr) {
@@ -510,13 +537,18 @@ public:
 
           hwActive_ = true;
           int auth = getMacMicAuthStatus();
-          std::string micTag = micActive ? ("Mic: " + getDeviceName(inDev)) : "Mic: Off";
+          std::string micTag = active[0] ? ("Mic: " + getDeviceName(inDevs[0])) : "Mic: Off";
           if (auth == 1 || auth == 2) {
             micTag = "Mic: Ditolak macOS (Cek Privacy)";
           }
-          std::string bgmTag = musicActive ? (" · Loopback: " + getDeviceName(musicDev)) : "";
+          std::string extraTag;
+          for (int s = 1; s < MixerEngine::kMaxInputSlots; ++s) {
+            if (active[s]) {
+              extraTag += " · In" + std::to_string(s + 1) + ": " + getDeviceName(inDevs[s]);
+            }
+          }
           status_ = "CoreAudio (" + std::to_string(static_cast<int>(engine_->sampleRate())) + " Hz · " + micTag +
-                    bgmTag + ")";
+                    extraTag + ")";
           return true;
         }
       }
@@ -576,8 +608,9 @@ private:
       AudioDeviceDestroyIOProcID(monDev_, monProcId_);
       monProcId_ = nullptr;
     }
-    micCapture_.stop();
-    musicCapture_.stop();
+    for (auto& cap : inputCaptures_) {
+      cap.stop();
+    }
   }
 
   static OSStatus outputIoProc(AudioDeviceID,
@@ -603,30 +636,26 @@ private:
       self->scratchSR_.resize(frames);
       self->scratchML_.resize(frames);
       self->scratchMR_.resize(frames);
-      self->scratchIn_.resize(frames * 16);
-      self->scratchMusic_.resize(frames * 16);
+      for (auto& bufVec : self->scratchInputs_) {
+        bufVec.resize(frames * 16);
+      }
       self->scratchStreamInterleaved_.resize(frames * 2);
     }
 
-    int micCh = self->micCapture_.procId ? self->micCapture_.channels : 0;
-    if (micCh > 0) {
-      size_t need = frames * static_cast<size_t>(micCh);
-      if (self->scratchIn_.size() < need) self->scratchIn_.resize(need);
-      self->micCapture_.ring.read(self->scratchIn_.data(), need);
+    std::array<MixerEngine::CaptureSource, MixerEngine::kMaxInputSlots> sources{};
+    for (int s = 0; s < MixerEngine::kMaxInputSlots; ++s) {
+      int ch = self->inputCaptures_[s].procId ? self->inputCaptures_[s].channels : 0;
+      if (ch > 0) {
+        size_t need = frames * static_cast<size_t>(ch);
+        if (self->scratchInputs_[s].size() < need) self->scratchInputs_[s].resize(need);
+        self->inputCaptures_[s].ring.read(self->scratchInputs_[s].data(), need);
+        sources[s] = {self->scratchInputs_[s].data(), ch};
+      }
     }
 
-    int musCh = self->musicCapture_.procId ? self->musicCapture_.channels : 0;
-    if (musCh > 0) {
-      size_t need = frames * static_cast<size_t>(musCh);
-      if (self->scratchMusic_.size() < need) self->scratchMusic_.resize(need);
-      self->musicCapture_.ring.read(self->scratchMusic_.data(), need);
-    }
-
-    self->engine_->processBlock(
-        micCh > 0 ? self->scratchIn_.data() : nullptr,
-        micCh,
-        musCh > 0 ? self->scratchMusic_.data() : nullptr,
-        musCh,
+    self->engine_->processBlockMulti(
+        sources.data(),
+        MixerEngine::kMaxInputSlots,
         frames,
         self->scratchSL_.data(),
         self->scratchSR_.data(),
@@ -685,10 +714,10 @@ private:
   AudioDeviceIOProcID monProcId_ = nullptr;
   AudioDeviceIOProcID streamProcId_ = nullptr;
 
-  InputCaptureSlot micCapture_;
-  InputCaptureSlot musicCapture_;
+  std::array<InputCaptureSlot, MixerEngine::kMaxInputSlots> inputCaptures_;
   LockFreeRing streamRing_{131072};
-  std::vector<float> scratchSL_, scratchSR_, scratchML_, scratchMR_, scratchIn_, scratchMusic_;
+  std::vector<float> scratchSL_, scratchSR_, scratchML_, scratchMR_;
+  std::array<std::vector<float>, MixerEngine::kMaxInputSlots> scratchInputs_;
   std::vector<float> scratchStreamInterleaved_, scratchStreamRead_, scratchStreamOutL_, scratchStreamOutR_;
 
   std::atomic<bool> running_{false};

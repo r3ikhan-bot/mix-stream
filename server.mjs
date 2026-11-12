@@ -224,8 +224,12 @@ class AudioEngineProcess {
   }
 
   startAudio(cfg) {
+    const pool = Array.isArray(cfg.inputDeviceIds) ? cfg.inputDeviceIds.filter((x) => x && x !== 'none') : [];
+    const inIds = pool.length
+      ? pool.slice(0, 4)
+      : [cfg.inputDevId || 'default', ...(cfg.musicInputDevId && cfg.musicInputDevId !== 'none' ? [cfg.musicInputDevId] : [])];
     this.sendCmd(
-      `START\t${cfg.inputDevId || 'default'}\t${cfg.musicInputDevId || 'none'}\t${cfg.monitorOutDevId || 'default'}\t${cfg.streamOutDevId || 'none'}\t${cfg.bufferSize || 256}\t${cfg.sampleRate || 0}`,
+      `START_MULTI\t${inIds.join(',')}\t${cfg.monitorOutDevId || 'default'}\t${cfg.streamOutDevId || 'none'}\t${cfg.bufferSize || 256}\t${cfg.sampleRate || 0}`,
     );
   }
 
@@ -259,7 +263,7 @@ class AudioEngineProcess {
       'eqOn', 'eqLowDb', 'eqMidHz', 'eqMidDb', 'eqHighDb', 'compOn', 'compThreshDb',
       'compRatio', 'compMakeupDb', 'reverbSend', 'pan', 'faderDb', 'mute',
       'solo', 'routeStream', 'routeMonitor', 'duckRole', 'testTone',
-      'inputChannelOffset', 'stereoInput', 'sourceMode',
+      'inputChannelOffset', 'stereoInput', 'sourceMode', 'sourceSlot',
       'insertA', 'insertAParam1', 'insertAParam2', 'insertB', 'insertBParam1', 'insertBParam2',
     ];
     for (const ch of state.channels) {
@@ -362,6 +366,7 @@ function loadState() {
           sourceMode: normalizeSourceMode(sCh.sourceMode, defCh.sourceMode),
           duckRole: normalizeDuckRole(sCh.duckRole, defCh.duckRole),
           stereoInput: typeof sCh.stereoInput === 'boolean' ? sCh.stereoInput : defCh.stereoInput,
+          sourceSlot: Number.isFinite(Number(sCh.sourceSlot)) ? Number(sCh.sourceSlot) : defCh.sourceSlot,
         };
       }),
     };

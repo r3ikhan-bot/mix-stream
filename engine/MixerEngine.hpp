@@ -43,6 +43,7 @@ struct ChannelAtomicParams {
   std::atomic<int> inputChannelOffset{0}; // 0=in1, 1=in2, etc.
   std::atomic<bool> stereoInput{true};    // false=true Mono (single slot), true=Stereo (pair)
   std::atomic<int> sourceMode{0};         // 0=hwMic, 1=bgmDeck+loopback, 2=loopback/aux, 3=pads, 4=fx
+  std::atomic<int> sourceSlot{-1};        // -1=auto(legacy), 0..3=explicit input device slot in pool
 
   std::atomic<int> insertA{0};            // 0=None, 1=DeEsser, 2=Warmth, 3=Delay, 4=VoiceFX
   std::atomic<float> insertAParam1{0.5f};
@@ -79,6 +80,12 @@ struct ChannelDsp {
 class MixerEngine {
 public:
   static constexpr int kChannels = 8; // 0..2:Mic/Line, 3..5:Guest/Game/App, 6:Music/BGM, 7:Soundboard
+  static constexpr int kMaxInputSlots = 4;
+
+  struct CaptureSource {
+    const float* interleaved = nullptr;
+    int channels = 0;
+  };
 
   std::array<ChannelAtomicParams, kChannels> chParams;
   std::array<ChannelDsp, kChannels> chDsp;
@@ -171,6 +178,21 @@ public:
                     size_t frames,
                     float* outStreamL, float* outStreamR,
                     float* outMonL, float* outMonR) {
+    CaptureSource sources[2] = {
+        {hwInInterleaved, hwInChannels},
+        {musicInInterleaved, musicInChannels},
+    };
+    processBlockMulti(sources, 2, frames, outStreamL, outStreamR, outMonL, outMonR);
+  }
+
+  /**
+   * Processes one audio block from up to kMaxInputSlots hardware/loopback/ASIO capture slots
+   * and built-in BGM/Soundboard players into separate Stream (OBS/TTLS) and Monitor stereo buffers.
+   */
+  void processBlockMulti(const CaptureSource* inputs, int numInputs,
+                         size_t frames,
+                         float* outStreamL, float* outStreamR,
+                         float* outMonL, float* outMonR) {
     if (frames == 0) return;
 
     if (padScratchL_.size() < frames) {
@@ -266,6 +288,7 @@ public:
       int inOffset = p.inputChannelOffset.load(std::memory_order_relaxed);
       bool stereoIn = p.stereoInput.load(std::memory_order_relaxed);
       int srcMode = p.sourceMode.load(std::memory_order_relaxed);
+      int srcSlot = p.sourceSlot.load(std::memory_order_relaxed);
       int insA = p.insertA.load(std::memory_order_relaxed);
       float insAP1 = p.insertAParam1.load(std::memory_order_relaxed);
       float insAP2 = p.insertAParam2.load(std::memory_order_relaxed);
@@ -295,6 +318,13 @@ public:
       float maxR = 0.0f;
       float toneFreq = 220.0f + c * 55.0f;
 
+      const CaptureSource slot0 = (inputs && numInputs > 0) ? inputs[0] : CaptureSource{};
+      const CaptureSource slot1 = (inputs && numInputs > 1) ? inputs[1] : CaptureSource{};
+      const CaptureSource explicitSlot =
+          (inputs && srcSlot >= 0 && srcSlot < numInputs && srcSlot < kMaxInputSlots)
+              ? inputs[srcSlot]
+              : CaptureSource{};
+
       for (size_t i = 0; i < frames; ++i) {
         float l = 0.0f;
         float r = 0.0f;
@@ -305,21 +335,26 @@ public:
         } else if (srcMode == 1) {
           l = bgmScratchL_[i];
           r = bgmScratchR_[i];
-          if (musicInInterleaved && musicInChannels > 0) {
+          const CaptureSource& musSrc = (srcSlot >= 0) ? explicitSlot : slot1;
+          if (musSrc.interleaved && musSrc.channels > 0) {
             float mL = 0.0f, mR = 0.0f;
-            readSlot(musicInInterleaved + i * musicInChannels, musicInChannels, mL, mR);
+            readSlot(musSrc.interleaved + i * musSrc.channels, musSrc.channels, mL, mR);
             l += mL;
             r += mR;
           }
-        } else if (srcMode == 2) {
-          if (musicInInterleaved && musicInChannels > 0) {
-            readSlot(musicInInterleaved + i * musicInChannels, musicInChannels, l, r);
-          } else if (hwInInterleaved && inOffset > 0 && inOffset < hwInChannels) {
-            readSlot(hwInInterleaved + i * hwInChannels, hwInChannels, l, r);
+        } else if (srcSlot >= 0) {
+          if (explicitSlot.interleaved && explicitSlot.channels > 0 && inOffset < explicitSlot.channels) {
+            readSlot(explicitSlot.interleaved + i * explicitSlot.channels, explicitSlot.channels, l, r);
           }
-        } else if (srcMode == 0 && hwInInterleaved && hwInChannels > 0) {
-          if (inOffset < hwInChannels) {
-            readSlot(hwInInterleaved + i * hwInChannels, hwInChannels, l, r);
+        } else if (srcMode == 2) {
+          if (slot1.interleaved && slot1.channels > 0) {
+            readSlot(slot1.interleaved + i * slot1.channels, slot1.channels, l, r);
+          } else if (slot0.interleaved && inOffset > 0 && inOffset < slot0.channels) {
+            readSlot(slot0.interleaved + i * slot0.channels, slot0.channels, l, r);
+          }
+        } else if (srcMode == 0 && slot0.interleaved && slot0.channels > 0) {
+          if (inOffset < slot0.channels) {
+            readSlot(slot0.interleaved + i * slot0.channels, slot0.channels, l, r);
           }
         }
 
