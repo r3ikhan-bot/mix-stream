@@ -885,6 +885,50 @@ dialog::backdrop {
   line-height: 1.6;
 }
 
+.dock-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.bgm-deck {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--recess);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.16rem 0.4rem;
+}
+
+.bgm-track-label {
+  font-size: 0.7rem;
+  color: var(--s1-green);
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.s1-btn.small[aria-pressed="true"] {
+  background: rgba(16, 185, 129, 0.22);
+  border-color: var(--s1-green);
+  color: #a7f3d0;
+}
+
+.dialog-tip {
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--muted);
+  background: var(--recess);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.48rem 0.6rem;
+}
+
 @media (max-width: 900px) {
   .fat-panel {
     position: fixed;

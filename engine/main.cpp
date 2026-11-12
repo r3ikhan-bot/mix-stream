@@ -84,7 +84,7 @@ int main() {
   };
 
   // Start default audio backend immediately
-  backend->start(engine, "default", "default", "none", 256);
+  backend->start(engine, "default", "none", "default", "none", 256);
 
   emitLine("READY StudioStreamEngine");
   emitDevices();
@@ -129,10 +129,15 @@ int main() {
       break;
     } else if (cmd == "LIST_DEVICES") {
       emitDevices();
+    } else if (cmd == "START" && parts.size() >= 6) {
+      int buf = 256;
+      try { buf = std::stoi(parts[5]); } catch (...) {}
+      backend->start(engine, parts[1], parts[2], parts[3], parts[4], buf);
+      emitStatus();
     } else if (cmd == "START" && parts.size() >= 5) {
       int buf = 256;
       try { buf = std::stoi(parts[4]); } catch (...) {}
-      backend->start(engine, parts[1], parts[2], parts[3], buf);
+      backend->start(engine, parts[1], "none", parts[2], parts[3], buf);
       emitStatus();
     } else if (cmd == "STOP") {
       backend->stop();
@@ -169,6 +174,7 @@ int main() {
       else if (key == "duckRole") p.duckRole.store(static_cast<int>(val), std::memory_order_relaxed);
       else if (key == "testTone") p.testTone.store(bval, std::memory_order_relaxed);
       else if (key == "inputChannelOffset") p.inputChannelOffset.store(static_cast<int>(val), std::memory_order_relaxed);
+      else if (key == "sourceMode") p.sourceMode.store(static_cast<int>(val), std::memory_order_relaxed);
     } else if (cmd == "GLOBAL" && parts.size() >= 3) {
       const std::string& key = parts[1];
       float val = std::stof(parts[2]);
@@ -180,6 +186,13 @@ int main() {
       else if (key == "streamMasterMute") engine.streamMasterMute.store(bval, std::memory_order_relaxed);
       else if (key == "monitorMasterDb") engine.monitorMasterDb.store(val, std::memory_order_relaxed);
       else if (key == "monitorMasterMute") engine.monitorMasterMute.store(bval, std::memory_order_relaxed);
+      else if (key == "bgmPlaying") engine.bgm.playing.store(bval, std::memory_order_relaxed);
+      else if (key == "bgmLoop") engine.bgm.loop.store(bval, std::memory_order_relaxed);
+    } else if (cmd == "BGM_LOAD" && parts.size() >= 2) {
+      bool ok = engine.bgm.loadWav(parts[1], static_cast<uint32_t>(engine.sampleRate()));
+      emitLine(std::string("BGM_LOADED ") + (ok ? "1" : "0"));
+    } else if (cmd == "BGM_RESTART") {
+      engine.bgm.restart();
     } else if (cmd == "PAD_TRIGGER" && parts.size() >= 3) {
       int idx = std::stoi(parts[1]);
       float gain = std::stof(parts[2]);

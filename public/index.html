@@ -52,15 +52,22 @@
     </aside>
   </main>
 
-  <section id="soundboard-dock" class="soundboard-dock" aria-label="Live Soundboard Pads">
+  <section id="soundboard-dock" class="soundboard-dock" aria-label="Live Soundboard Pads &amp; BGM Deck">
     <div class="dock-head">
       <div class="dock-title-wrap">
-        <h2>Soundboard Pads</h2>
-        <span class="dock-hint">Klik pad untuk putar ke Stream (OBS/TTLS) &amp; Monitor · Upload .WAV kustom per pad</span>
+        <h2>Soundboard &amp; BGM Deck</h2>
+        <span class="dock-hint">Ch 2 (Music / BGM) bisa putar file MP3/M4A/WAV langsung atau lewat Loopback (BlackHole/VB-Cable)</span>
       </div>
       <div class="dock-actions">
-        <input type="file" id="wav-upload-input" accept=".wav,audio/wav" hidden>
-        <button type="button" id="stop-pads-btn" class="s1-btn danger small">Stop All</button>
+        <div class="bgm-deck" role="group" aria-label="Background Music Player">
+          <input type="file" id="bgm-upload-input" accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg,.flac" hidden>
+          <span id="bgm-track-label" class="bgm-track-label">BGM: Kosong</span>
+          <button type="button" id="bgm-load-btn" class="s1-btn small">Muat BGM</button>
+          <button type="button" id="bgm-play-btn" class="s1-btn small" aria-pressed="false">Play BGM</button>
+          <button type="button" id="bgm-loop-btn" class="s1-btn small" aria-pressed="true">Loop</button>
+        </div>
+        <input type="file" id="wav-upload-input" accept="audio/*,.wav,.mp3,.m4a,.ogg" hidden>
+        <button type="button" id="stop-pads-btn" class="s1-btn danger small">Stop Pads</button>
       </div>
     </div>
     <div id="pads-row" class="pads-row"></div>
@@ -76,8 +83,12 @@
     </form>
     <div class="dialog-body">
       <div class="form-row">
-        <label for="sel-input-dev">Input Hardware (Mic / Audio Interface)</label>
+        <label for="sel-input-dev">Mic Input (Masuk ke Ch 1: Mic / Vocal)</label>
         <select id="sel-input-dev"></select>
+      </div>
+      <div class="form-row">
+        <label for="sel-music-input-dev">Loopback / BGM Input (Ch 2–4: Spotify/YouTube via BlackHole / VB-Cable)</label>
+        <select id="sel-music-input-dev"></select>
       </div>
       <div class="form-row">
         <label for="sel-mon-dev">Monitor Output (Headphone / Speaker)</label>
@@ -95,6 +106,9 @@
           <option value="512">512 samples (Safe)</option>
         </select>
       </div>
+      <p class="dialog-tip">
+        Tips macOS: Jika meter Mic tetap diam, buka <strong>System Settings → Privacy &amp; Security → Microphone</strong> dan aktifkan izin untuk Terminal / StudioStream. Untuk memutar lagu dari Spotify/Browser, pilih <strong>BlackHole 2ch</strong> di Loopback Input, atau pakai tombol <strong>Muat BGM</strong> di dock bawah untuk memutar file lagu langsung.
+      </p>
       <div class="dialog-actions">
         <button type="button" id="refresh-dev-btn" class="s1-btn">Scan Ulang Device</button>
         <button type="button" id="apply-audio-btn" class="s1-btn accent">Terapkan Audio</button>

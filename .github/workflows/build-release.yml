@@ -106,16 +106,16 @@ jobs:
             -framework CoreAudio -framework AudioToolbox -framework CoreFoundation \
             engine/main.cpp engine/MacAudioBackend.cpp -o build/studio-stream-engine
 
-          if swiftc -O -target arm64-apple-macos14.0 -framework Cocoa -framework WebKit \
+          if swiftc -O -target arm64-apple-macos14.0 -framework AVFoundation -framework Cocoa -framework WebKit \
               desktop/MacWindow.swift -o build/StudioStreamDesktop-arm64 && \
-             swiftc -O -target x86_64-apple-macos14.0 -framework Cocoa -framework WebKit \
+             swiftc -O -target x86_64-apple-macos14.0 -framework AVFoundation -framework Cocoa -framework WebKit \
               desktop/MacWindow.swift -o build/StudioStreamDesktop-x86_64; then
             lipo -create build/StudioStreamDesktop-arm64 build/StudioStreamDesktop-x86_64 \
               -output build/StudioStreamDesktop
             rm -f build/StudioStreamDesktop-arm64 build/StudioStreamDesktop-x86_64
           else
             rm -f build/StudioStreamDesktop-arm64 build/StudioStreamDesktop-x86_64
-            swiftc -O -framework Cocoa -framework WebKit \
+            swiftc -O -framework AVFoundation -framework Cocoa -framework WebKit \
               desktop/MacWindow.swift -o build/StudioStreamDesktop
           fi
           chmod +x build/studio-stream-engine build/StudioStreamDesktop

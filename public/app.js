@@ -29,9 +29,15 @@ const dom = {
   padsRow: document.getElementById('pads-row'),
   stopPadsBtn: document.getElementById('stop-pads-btn'),
   wavUploadInput: document.getElementById('wav-upload-input'),
+  bgmUploadInput: document.getElementById('bgm-upload-input'),
+  bgmTrackLabel: document.getElementById('bgm-track-label'),
+  bgmLoadBtn: document.getElementById('bgm-load-btn'),
+  bgmPlayBtn: document.getElementById('bgm-play-btn'),
+  bgmLoopBtn: document.getElementById('bgm-loop-btn'),
   audioDialog: document.getElementById('audio-dialog'),
   adStatusSub: document.getElementById('ad-status-sub'),
   selInputDev: document.getElementById('sel-input-dev'),
+  selMusicInputDev: document.getElementById('sel-music-input-dev'),
   selMonDev: document.getElementById('sel-mon-dev'),
   selStreamDev: document.getElementById('sel-stream-dev'),
   selBufSize: document.getElementById('sel-buf-size'),
@@ -230,6 +236,14 @@ function syncTopStatus() {
   dom.autoDuckBtn.setAttribute('aria-pressed', String(Boolean(app.state.globals.autoDuckEnabled)));
   dom.toggleFatBtn.setAttribute('aria-pressed', String(!dom.fatPanel.hidden));
   dom.togglePadsBtn.setAttribute('aria-pressed', String(!dom.soundboardDock.hidden));
+  const bgmPlaying = Boolean(app.state.globals.bgmPlaying);
+  const bgmLoop = app.state.globals.bgmLoop !== false;
+  dom.bgmPlayBtn.setAttribute('aria-pressed', String(bgmPlaying));
+  dom.bgmPlayBtn.textContent = bgmPlaying ? 'Pause BGM' : 'Play BGM';
+  dom.bgmLoopBtn.setAttribute('aria-pressed', String(bgmLoop));
+  dom.bgmTrackLabel.textContent = app.state.bgm?.trackName
+    ? `BGM: ${app.state.bgm.trackName}`
+    : 'BGM: Kosong';
 }
 
 function renderSceneBar() {
@@ -777,6 +791,7 @@ function populateDeviceSelects() {
   const inputs = app.devices.filter((d) => d.in > 0);
   const outputs = app.devices.filter((d) => d.out > 0);
   fill(dom.selInputDev, inputs, app.state.audioConfig.inputDevId, true);
+  fill(dom.selMusicInputDev, inputs, app.state.audioConfig.musicInputDevId || 'none', true);
   fill(dom.selMonDev, outputs, app.state.audioConfig.monitorOutDevId, true);
   fill(dom.selStreamDev, outputs, app.state.audioConfig.streamOutDevId, true);
   dom.selBufSize.value = String(app.state.audioConfig.bufferSize || 256);
@@ -835,17 +850,104 @@ dom.togglePadsBtn.addEventListener('click', () => {
 
 dom.stopPadsBtn.addEventListener('click', () => sendWs({ type: 'pad_stop_all' }));
 
+async function decodeAudioFileToWavBuffer(file, targetRate = 48000) {
+  const raw = await file.arrayBuffer();
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx) return raw;
+  const ctx = new AudioCtx();
+  try {
+    const decoded = await ctx.decodeAudioData(raw.slice(0));
+    const frameCount = Math.max(1, Math.ceil(decoded.duration * targetRate));
+    const offline = new OfflineAudioContext(2, frameCount, targetRate);
+    const src = offline.createBufferSource();
+    src.buffer = decoded;
+    src.connect(offline.destination);
+    src.start(0);
+    const rendered = await offline.startRendering();
+    const ch0 = rendered.getChannelData(0);
+    const ch1 = rendered.numberOfChannels > 1 ? rendered.getChannelData(1) : ch0;
+    const dataBytes = rendered.length * 4;
+    const out = new ArrayBuffer(44 + dataBytes);
+    const view = new DataView(out);
+    const writeStr = (off, s) => {
+      for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
+    };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataBytes, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 2, true);
+    view.setUint32(24, targetRate, true);
+    view.setUint32(28, targetRate * 4, true);
+    view.setUint16(32, 4, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, dataBytes, true);
+    let pos = 44;
+    for (let i = 0; i < rendered.length; i++) {
+      const l = Math.max(-1, Math.min(1, ch0[i]));
+      const r = Math.max(-1, Math.min(1, ch1[i]));
+      view.setInt16(pos, l < 0 ? l * 0x8000 : l * 0x7fff, true);
+      view.setInt16(pos + 2, r < 0 ? r * 0x8000 : r * 0x7fff, true);
+      pos += 4;
+    }
+    return out;
+  } finally {
+    await ctx.close();
+  }
+}
+
 dom.wavUploadInput.addEventListener('change', async () => {
   const file = dom.wavUploadInput.files?.[0];
   if (!file) return;
   try {
+    const wavBuf = await decodeAudioFileToWavBuffer(file);
     await fetch(`/api/upload-wav?pad=${app.uploadPadIdx}&name=${encodeURIComponent(file.name)}`, {
       method: 'POST',
-      body: await file.arrayBuffer(),
+      body: wavBuf,
     });
   } finally {
     dom.wavUploadInput.value = '';
   }
+});
+
+dom.bgmLoadBtn.addEventListener('click', () => dom.bgmUploadInput.click());
+
+dom.bgmUploadInput.addEventListener('change', async () => {
+  const file = dom.bgmUploadInput.files?.[0];
+  if (!file) return;
+  dom.bgmTrackLabel.textContent = 'Decoding...';
+  try {
+    const wavBuf = await decodeAudioFileToWavBuffer(file);
+    await fetch(`/api/upload-bgm?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      body: wavBuf,
+    });
+  } catch {
+    dom.bgmTrackLabel.textContent = 'Gagal memuat audio';
+  } finally {
+    dom.bgmUploadInput.value = '';
+  }
+});
+
+dom.bgmPlayBtn.addEventListener('click', () => {
+  if (!app.state) return;
+  if (!app.state.bgm?.wavPath) {
+    dom.bgmUploadInput.click();
+    return;
+  }
+  const next = !app.state.globals.bgmPlaying;
+  setGlobalParam('bgmPlaying', next);
+  syncTopStatus();
+});
+
+dom.bgmLoopBtn.addEventListener('click', () => {
+  if (!app.state) return;
+  const next = !(app.state.globals.bgmLoop !== false);
+  setGlobalParam('bgmLoop', next);
+  syncTopStatus();
 });
 
 dom.audioSetupBtn.addEventListener('click', () => {
@@ -859,6 +961,7 @@ dom.refreshDevBtn.addEventListener('click', () => sendWs({ type: 'refresh_device
 dom.applyAudioBtn.addEventListener('click', () => {
   const config = {
     inputDevId: dom.selInputDev.value,
+    musicInputDevId: dom.selMusicInputDev.value,
     monitorOutDevId: dom.selMonDev.value,
     streamOutDevId: dom.selStreamDev.value,
     bufferSize: Number(dom.selBufSize.value),

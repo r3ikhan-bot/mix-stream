@@ -123,7 +123,15 @@ function ensureBinaries() {
       console.log('[Desktop] Compiling native macOS Studio One shell...');
       execFileSync(
         'swiftc',
-        ['-O', '-framework', 'Cocoa', '-framework', 'WebKit', desktopSrc, '-o', DESKTOP_BIN],
+        [
+          '-O',
+          '-framework', 'AVFoundation',
+          '-framework', 'Cocoa',
+          '-framework', 'WebKit',
+          desktopSrc,
+          '-o',
+          DESKTOP_BIN,
+        ],
         { stdio: 'inherit' },
       );
     }
@@ -217,7 +225,7 @@ class AudioEngineProcess {
 
   startAudio(cfg) {
     this.sendCmd(
-      `START\t${cfg.inputDevId || 'default'}\t${cfg.monitorOutDevId || 'default'}\t${cfg.streamOutDevId || 'none'}\t${cfg.bufferSize || 256}`,
+      `START\t${cfg.inputDevId || 'default'}\t${cfg.musicInputDevId || 'none'}\t${cfg.monitorOutDevId || 'default'}\t${cfg.streamOutDevId || 'none'}\t${cfg.bufferSize || 256}`,
     );
   }
 
@@ -237,12 +245,20 @@ class AudioEngineProcess {
     this.sendCmd(`PAD_LOAD\t${index}\t${wavPath}\t${label}`);
   }
 
+  loadBgmWav(wavPath) {
+    this.sendCmd(`BGM_LOAD\t${wavPath}`);
+  }
+
+  restartBgm() {
+    this.sendCmd('BGM_RESTART');
+  }
+
   syncAll(state) {
     const chKeys = [
       'trimDb', 'phaseInvert', 'hpfOn', 'hpfHz', 'gateOn', 'gateThreshDb',
       'eqOn', 'eqLowDb', 'eqMidDb', 'eqHighDb', 'compOn', 'compThreshDb',
       'compRatio', 'compMakeupDb', 'reverbSend', 'pan', 'faderDb', 'mute',
-      'solo', 'routeStream', 'routeMonitor', 'duckRole', 'testTone', 'inputChannelOffset',
+      'solo', 'routeStream', 'routeMonitor', 'duckRole', 'testTone', 'inputChannelOffset', 'sourceMode',
     ];
     for (const ch of state.channels) {
       for (const k of chKeys) {
@@ -256,6 +272,9 @@ class AudioEngineProcess {
       if (pad.wavPath && fs.existsSync(pad.wavPath)) {
         this.loadPadWav(pad.index, pad.wavPath, pad.name);
       }
+    }
+    if (state.bgm && state.bgm.wavPath && fs.existsSync(state.bgm.wavPath)) {
+      this.loadBgmWav(state.bgm.wavPath);
     }
     if (state.audioConfig) {
       this.startAudio(state.audioConfig);
@@ -297,7 +316,13 @@ function loadState() {
       ...defaults,
       ...saved,
       audioConfig: { ...defaults.audioConfig, ...(saved.audioConfig || {}) },
+      bgm: { ...defaults.bgm, ...(saved.bgm || {}) },
       globals: { ...defaults.globals, ...(saved.globals || {}) },
+      channels: defaults.channels.map((defCh, i) => ({
+        ...defCh,
+        ...(saved.channels[i] || {}),
+        sourceMode: saved.channels[i]?.sourceMode ?? defCh.sourceMode,
+      })),
     };
   } catch {
     return defaults;
@@ -398,6 +423,27 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/upload-bgm') {
+    try {
+      const rawName = (url.searchParams.get('name') || 'Background Music').replace(/\.[^.]+$/, '').slice(0, 36);
+      const buf = await readBinaryBody(req, 64 * 1024 * 1024);
+      const dest = path.join(SAMPLES_DIR, 'bgm_track.wav');
+      fs.writeFileSync(dest, buf);
+      appState.bgm = { trackName: rawName, wavPath: dest };
+      appState.globals.bgmPlaying = true;
+      scheduleSave(appState);
+      engine.loadBgmWav(dest);
+      engine.setGlobalParam('bgmPlaying', true);
+      wsHub.broadcast({ type: 'full_state', state: appState });
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: true, name: rawName }));
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, error: err.message }));
+    }
+    return;
+  }
+
   let relPath = url.pathname === '/' ? '/index.html' : url.pathname;
   relPath = path.normalize(relPath).replace(/^(\.\.[/\\])+/, '');
   const filePath = path.join(PUBLIC_DIR, relPath);
@@ -453,6 +499,10 @@ server.on('upgrade', (req, socket) => {
         }
         case 'pad_stop_all': {
           engine.stopAllPads();
+          break;
+        }
+        case 'bgm_restart': {
+          engine.restartBgm();
           break;
         }
         case 'recall_scene': {

@@ -40,6 +40,7 @@ struct ChannelAtomicParams {
   std::atomic<int> duckRole{0}; // 0=none, 1=trigger(mic), 2=target(music)
   std::atomic<bool> testTone{false};
   std::atomic<int> inputChannelOffset{0}; // 0=ch1-2, 2=ch3-4, etc.
+  std::atomic<int> sourceMode{0};         // 0=hwMic, 1=bgmDeck+loopback, 2=loopback/aux, 3=pads, 4=fx
 };
 
 struct ChannelDsp {
@@ -84,21 +85,28 @@ public:
   std::atomic<float> duckGainDb{0.0f};
 
   Soundboard soundboard;
+  BgmPlayer bgm;
 
   MixerEngine() {
     // Channel defaults tailored for Live Streaming / OBS / TTLS
     chParams[0].duckRole.store(1);      // Mic triggers ducking
+    chParams[0].sourceMode.store(0);    // Hardware Mic input
     chParams[0].gateOn.store(true);
     chParams[0].compOn.store(true);
     chParams[0].hpfOn.store(true);
     chParams[0].hpfHz.store(85.0f);
 
     chParams[1].duckRole.store(2);      // Music gets ducked when Mic talks
+    chParams[1].sourceMode.store(1);    // Built-in BGM Deck + Loopback input
     chParams[1].hpfOn.store(false);
+    chParams[2].sourceMode.store(2);    // Loopback / Aux capture
     chParams[2].hpfOn.store(false);     // Game / Browser
+    chParams[3].sourceMode.store(2);    // Loopback / Aux capture
     chParams[3].hpfOn.store(true);      // Guest / Discord
-    chParams[4].hpfOn.store(false);     // Soundboard Pads
-    chParams[5].hpfOn.store(true);      // FX Return
+    chParams[4].sourceMode.store(3);    // Soundboard Pads
+    chParams[4].hpfOn.store(false);
+    chParams[5].sourceMode.store(4);    // FX Return
+    chParams[5].hpfOn.store(true);
   }
 
   void setSampleRate(float sr) {
@@ -109,10 +117,12 @@ public:
   float sampleRate() const { return sampleRate_; }
 
   /**
-   * Processes one audio block from hardware inputs into separate Stream (OBS/TTLS)
-   * and Monitor (Headphone) stereo buffers.
+   * Processes one audio block from hardware inputs (Mic + optional Loopback/BGM input)
+   * and built-in BGM/Soundboard players into separate Stream (OBS/TTLS) and Monitor stereo buffers.
    */
-  void processBlock(const float* hwInInterleaved, int hwInChannels, size_t frames,
+  void processBlock(const float* hwInInterleaved, int hwInChannels,
+                    const float* musicInInterleaved, int musicInChannels,
+                    size_t frames,
                     float* outStreamL, float* outStreamR,
                     float* outMonL, float* outMonR) {
     if (frames == 0) return;
@@ -120,12 +130,16 @@ public:
     if (padScratchL_.size() < frames) {
       padScratchL_.assign(frames, 0.0f);
       padScratchR_.assign(frames, 0.0f);
+      bgmScratchL_.assign(frames, 0.0f);
+      bgmScratchR_.assign(frames, 0.0f);
       revInL_.assign(frames, 0.0f);
       revInR_.assign(frames, 0.0f);
     }
 
     std::fill(padScratchL_.begin(), padScratchL_.begin() + frames, 0.0f);
     std::fill(padScratchR_.begin(), padScratchR_.begin() + frames, 0.0f);
+    std::fill(bgmScratchL_.begin(), bgmScratchL_.begin() + frames, 0.0f);
+    std::fill(bgmScratchR_.begin(), bgmScratchR_.begin() + frames, 0.0f);
     std::fill(revInL_.begin(), revInL_.begin() + frames, 0.0f);
     std::fill(revInR_.begin(), revInR_.begin() + frames, 0.0f);
     std::fill(outStreamL, outStreamL + frames, 0.0f);
@@ -134,6 +148,7 @@ public:
     std::fill(outMonR, outMonR + frames, 0.0f);
 
     soundboard.mixStereo(padScratchL_.data(), padScratchR_.data(), frames);
+    bgm.renderStereo(bgmScratchL_.data(), bgmScratchR_.data(), frames);
 
     bool anySolo = false;
     for (int c = 0; c < kChannels; ++c) {
@@ -197,6 +212,7 @@ public:
       int duckRole = p.duckRole.load(std::memory_order_relaxed);
       bool tone = p.testTone.load(std::memory_order_relaxed);
       int inOffset = p.inputChannelOffset.load(std::memory_order_relaxed);
+      int srcMode = p.sourceMode.load(std::memory_order_relaxed);
 
       float maxL = 0.0f;
       float maxR = 0.0f;
@@ -209,14 +225,35 @@ public:
         float l = 0.0f;
         float r = 0.0f;
 
-        if (c == 4) {
+        if (srcMode == 3 || c == 4) {
           l = padScratchL_[i];
           r = padScratchR_[i];
+        } else if (srcMode == 1) {
+          l = bgmScratchL_[i];
+          r = bgmScratchR_[i];
+          if (musicInInterleaved && musicInChannels > 0) {
+            int chL = std::min(inOffset, musicInChannels - 1);
+            int chR = (inOffset + 1 < musicInChannels) ? (inOffset + 1) : chL;
+            l += musicInInterleaved[i * musicInChannels + chL];
+            r += musicInInterleaved[i * musicInChannels + chR];
+          }
+        } else if (srcMode == 2) {
+          if (musicInInterleaved && musicInChannels > 0) {
+            int chL = std::min(inOffset, musicInChannels - 1);
+            int chR = (inOffset + 1 < musicInChannels) ? (inOffset + 1) : chL;
+            l = musicInInterleaved[i * musicInChannels + chL];
+            r = musicInInterleaved[i * musicInChannels + chR];
+          } else if (hwInInterleaved && inOffset > 0 && inOffset < hwInChannels) {
+            int chL = inOffset;
+            int chR = (inOffset + 1 < hwInChannels) ? (inOffset + 1) : chL;
+            l = hwInInterleaved[i * hwInChannels + chL];
+            r = hwInInterleaved[i * hwInChannels + chR];
+          }
         } else if (hwInInterleaved && hwInChannels > 0) {
-          int chL = inOffset;
+          int chL = std::min(inOffset, hwInChannels - 1);
           int chR = (inOffset + 1 < hwInChannels) ? (inOffset + 1) : chL;
-          if (chL < hwInChannels) l = hwInInterleaved[i * hwInChannels + chL];
-          if (chR < hwInChannels) r = hwInInterleaved[i * hwInChannels + chR];
+          l = hwInInterleaved[i * hwInChannels + chL];
+          r = hwInInterleaved[i * hwInChannels + chR];
         }
 
         if (tone) {
@@ -356,7 +393,7 @@ private:
   float sampleRate_ = 48000.0f;
   float currentDuckLinear_ = 1.0f;
   SimpleStereoReverb reverb_;
-  std::vector<float> padScratchL_, padScratchR_, revInL_, revInR_;
+  std::vector<float> padScratchL_, padScratchR_, bgmScratchL_, bgmScratchR_, revInL_, revInR_;
 };
 
 } // namespace ssm

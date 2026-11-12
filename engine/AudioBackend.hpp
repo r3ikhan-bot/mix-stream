@@ -21,6 +21,7 @@ public:
   virtual std::vector<AudioDeviceInfo> listDevices() = 0;
   virtual bool start(MixerEngine& engine,
                      const std::string& inputDevId,
+                     const std::string& musicInputDevId,
                      const std::string& monitorOutDevId,
                      const std::string& streamOutDevId,
                      int bufferSize) = 0;

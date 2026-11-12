@@ -43,6 +43,54 @@ std::wstring utf8ToWide(const std::string& str) {
   return out;
 }
 
+struct WasapiCaptureHandle {
+  IAudioClient* client = nullptr;
+  IAudioCaptureClient* capture = nullptr;
+  UINT32 channels = 2;
+  bool active = false;
+
+  void release() {
+    if (client) {
+      client->Stop();
+      client->Release();
+      client = nullptr;
+    }
+    if (capture) {
+      capture->Release();
+      capture = nullptr;
+    }
+    active = false;
+  }
+};
+
+void drainCapturePackets(WasapiCaptureHandle& handle, std::vector<float>& ring, size_t blockFrames) {
+  std::fill(ring.begin(), ring.end(), 0.0f);
+  if (!handle.active || !handle.capture) return;
+
+  size_t filled = 0;
+  UINT32 packetLen = 0;
+  while (SUCCEEDED(handle.capture->GetNextPacketSize(&packetLen)) && packetLen > 0) {
+    BYTE* capData = nullptr;
+    UINT32 numFrames = 0;
+    DWORD flags = 0;
+    if (FAILED(handle.capture->GetBuffer(&capData, &numFrames, &flags, nullptr, nullptr))) break;
+
+    if (!(flags & AUDCLNT_BUFFERFLAGS_SILENT) && capData) {
+      const float* fIn = reinterpret_cast<const float*>(capData);
+      for (UINT32 i = 0; i < numFrames && filled < blockFrames; ++i) {
+        for (UINT32 ch = 0; ch < handle.channels; ++ch) {
+          ring[filled * handle.channels + ch] = fIn[i * handle.channels + ch];
+        }
+        ++filled;
+      }
+    } else {
+      filled = std::min(blockFrames, filled + static_cast<size_t>(numFrames));
+    }
+    handle.capture->ReleaseBuffer(numFrames);
+    if (filled >= blockFrames) break;
+  }
+}
+
 } // namespace
 
 class WinAudioBackend final : public AudioBackend {
@@ -119,6 +167,7 @@ public:
 
   bool start(MixerEngine& engine,
              const std::string& inputDevId,
+             const std::string& musicInputDevId,
              const std::string& monitorOutDevId,
              const std::string& streamOutDevId,
              int bufferSize) override {
@@ -128,7 +177,7 @@ public:
     running_.store(true);
     status_ = "WASAPI Live (48000 Hz)";
 
-    worker_ = std::thread([this, inputDevId, monitorOutDevId, streamOutDevId, bufferSize]() {
+    worker_ = std::thread([this, inputDevId, musicInputDevId, monitorOutDevId, streamOutDevId, bufferSize]() {
       CoInitializeEx(nullptr, COINIT_MULTITHREADED);
       IMMDeviceEnumerator* enumerator = nullptr;
       CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
@@ -156,7 +205,7 @@ public:
           engine_->setSampleRate(static_cast<float>(mixFmt->nSamplesPerSec));
           *outChannels = std::max<UINT32>(1, mixFmt->nChannels);
         }
-        REFERENCE_TIME dur = 200000; // 20ms shared buffer
+        REFERENCE_TIME dur = 200000;
         hr = (*outClient)->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, dur, 0, mixFmt, nullptr);
         if (mixFmt) CoTaskMemFree(mixFmt);
         if (FAILED(hr)) return false;
@@ -167,10 +216,7 @@ public:
         return (*outRender != nullptr);
       };
 
-      auto openCapture = [&](const std::string& devId,
-                             IAudioClient** outClient,
-                             IAudioCaptureClient** outCapture,
-                             UINT32* outChannels) {
+      auto openCapture = [&](const std::string& devId, WasapiCaptureHandle& out) {
         if (!enumerator || devId == "none" || devId.empty()) return false;
         IMMDevice* dev = nullptr;
         HRESULT hr = (devId == "default")
@@ -178,29 +224,33 @@ public:
                          : enumerator->GetDevice(utf8ToWide(devId).c_str(), &dev);
         if (FAILED(hr) || !dev) return false;
 
-        hr = dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(outClient));
+        hr = dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&out.client));
         dev->Release();
-        if (FAILED(hr) || !*outClient) return false;
+        if (FAILED(hr) || !out.client) return false;
 
         WAVEFORMATEX* mixFmt = nullptr;
-        (*outClient)->GetMixFormat(&mixFmt);
+        out.client->GetMixFormat(&mixFmt);
         if (mixFmt) {
-          *outChannels = std::max<UINT32>(1, mixFmt->nChannels);
+          out.channels = std::max<UINT32>(1, mixFmt->nChannels);
         }
         REFERENCE_TIME dur = 200000;
-        hr = (*outClient)->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, dur, 0, mixFmt, nullptr);
+        hr = out.client->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, dur, 0, mixFmt, nullptr);
         if (mixFmt) CoTaskMemFree(mixFmt);
         if (FAILED(hr)) return false;
 
-        (*outClient)->GetService(__uuidof(IAudioCaptureClient), reinterpret_cast<void**>(outCapture));
-        (*outClient)->Start();
-        return (*outCapture != nullptr);
+        out.client->GetService(__uuidof(IAudioCaptureClient), reinterpret_cast<void**>(&out.capture));
+        out.client->Start();
+        out.active = (out.capture != nullptr);
+        return out.active;
       };
 
-      IAudioClient* capClient = nullptr;
-      IAudioCaptureClient* capCapture = nullptr;
-      UINT32 capChannels = 2;
-      bool hasCap = openCapture(inputDevId.empty() ? "default" : inputDevId, &capClient, &capCapture, &capChannels);
+      WasapiCaptureHandle micCap;
+      openCapture(inputDevId.empty() ? "default" : inputDevId, micCap);
+
+      WasapiCaptureHandle musicCap;
+      if (musicInputDevId != inputDevId) {
+        openCapture(musicInputDevId, musicCap);
+      }
 
       IAudioClient* monClient = nullptr;
       IAudioRenderClient* monRender = nullptr;
@@ -217,40 +267,19 @@ public:
                     openRender(streamOutDevId, &strClient, &strRender, &strBufFrames, &strChannels);
 
       const size_t blockFrames = static_cast<size_t>(std::clamp(bufferSize, 128, 1024));
-      std::vector<float> capRing(blockFrames * capChannels * 2, 0.0f);
+      std::vector<float> micRing(blockFrames * micCap.channels * 2, 0.0f);
+      std::vector<float> musRing(blockFrames * musicCap.channels * 2, 0.0f);
       std::vector<float> sL(blockFrames), sR(blockFrames), mL(blockFrames), mR(blockFrames);
 
       while (running_.load()) {
-        std::fill(capRing.begin(), capRing.end(), 0.0f);
-        size_t capFilled = 0;
-
-        if (hasCap && capCapture) {
-          UINT32 packetLen = 0;
-          while (SUCCEEDED(capCapture->GetNextPacketSize(&packetLen)) && packetLen > 0) {
-            BYTE* capData = nullptr;
-            UINT32 numFrames = 0;
-            DWORD flags = 0;
-            if (FAILED(capCapture->GetBuffer(&capData, &numFrames, &flags, nullptr, nullptr))) break;
-
-            if (!(flags & AUDCLNT_BUFFERFLAGS_SILENT) && capData) {
-              const float* fIn = reinterpret_cast<const float*>(capData);
-              for (UINT32 i = 0; i < numFrames && capFilled < blockFrames; ++i) {
-                for (UINT32 ch = 0; ch < capChannels; ++ch) {
-                  capRing[capFilled * capChannels + ch] = fIn[i * capChannels + ch];
-                }
-                ++capFilled;
-              }
-            } else {
-              capFilled = std::min(blockFrames, capFilled + static_cast<size_t>(numFrames));
-            }
-            capCapture->ReleaseBuffer(numFrames);
-            if (capFilled >= blockFrames) break;
-          }
-        }
+        drainCapturePackets(micCap, micRing, blockFrames);
+        drainCapturePackets(musicCap, musRing, blockFrames);
 
         engine_->processBlock(
-            hasCap ? capRing.data() : nullptr,
-            hasCap ? static_cast<int>(capChannels) : 0,
+            micCap.active ? micRing.data() : nullptr,
+            micCap.active ? static_cast<int>(micCap.channels) : 0,
+            musicCap.active ? musRing.data() : nullptr,
+            musicCap.active ? static_cast<int>(musicCap.channels) : 0,
             blockFrames,
             sL.data(),
             sR.data(),
@@ -286,8 +315,8 @@ public:
         std::this_thread::sleep_for(std::chrono::milliseconds(4));
       }
 
-      if (capClient) { capClient->Stop(); capClient->Release(); }
-      if (capCapture) capCapture->Release();
+      micCap.release();
+      musicCap.release();
       if (monClient) { monClient->Stop(); monClient->Release(); }
       if (monRender) monRender->Release();
       if (strClient) { strClient->Stop(); strClient->Release(); }

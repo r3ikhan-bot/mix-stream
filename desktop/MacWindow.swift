@@ -1,3 +1,4 @@
+import AVFoundation
 import Cocoa
 import WebKit
 
@@ -11,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AVCaptureDevice.requestAccess(for: .audio) { _ in }
         let screenRect = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         let width = min(1320, screenRect.width * 0.9)
         let height = min(820, screenRect.height * 0.88)
